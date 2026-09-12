@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { FilesetResolver, HandLandmarker, type HandLandmarkerResult } from "@mediapipe/tasks-vision";
 import "./App.css";
 
@@ -19,7 +19,7 @@ const getGreeting = () => { const h = new Date().getHours(); return h < 12 ? "Go
 
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
   const common = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
-  const paths: Record<string, React.ReactNode> = {
+  const paths: Record<string, ReactNode> = {
     mic: <><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8"/></>,
     send: <><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></>,
     stop: <rect x="6" y="6" width="12" height="12" rx="2"/>,
@@ -72,11 +72,7 @@ export default function App() {
   const speak = (text: string) => { if (muted || !("speechSynthesis" in window)) return; stopSpeaking(); const selected = voices.find(v => v.name === voiceName && v.lang.toLowerCase().startsWith(language.slice(0, 2)))?.voice ?? voices.find(v => v.lang.toLowerCase().startsWith(language.slice(0, 2)))?.voice ?? pickVoice(window.speechSynthesis.getVoices()); const u = new SpeechSynthesisUtterance(text); if (selected) u.voice = selected; u.lang = selected?.lang ?? language; u.rate = 0.94; u.pitch = 1; u.onstart = () => { setSpeaking(true); setVoiceStatus(`Aura is speaking · ${language}`); }; u.onend = () => { setSpeaking(false); setVoiceStatus("Ready for your voice"); }; u.onerror = () => { setSpeaking(false); setVoiceStatus("Speech could not be played"); }; window.speechSynthesis.speak(u); };
 
   const playClip = async (src: string, volume = 1) => { welcomeAudioRef.current?.pause(); const audio = new Audio(src); audio.volume = volume; welcomeAudioRef.current = audio; audio.onplay = () => { setSpeaking(true); setVoiceStatus("Aura is welcoming you"); }; audio.onended = () => { setSpeaking(false); setVoiceStatus("Ready for your voice"); }; await audio.play(); };
-  const startWelcomeSequence = async () => {
-    if (welcomeStartedRef.current || welcomeLockRef.current) return; welcomeLockRef.current = true;
-    try { await playClip("/welcome-to-aura.mp3", 1); welcomeStartedRef.current = true; await new Promise(r => window.setTimeout(r, 220)); try { await playClip("/futuristic-intro.wav", .68); } catch { /* browser can block secondary audio */ } }
-    catch { try { speak("Welcome to Aura."); welcomeStartedRef.current = true; } catch { /* browser policy may require the first gesture */ } }
-  };
+  const startWelcomeSequence = async () => { if (welcomeStartedRef.current || welcomeLockRef.current) return; welcomeLockRef.current = true; try { await playClip("/welcome-to-aura.mp3", 1); welcomeStartedRef.current = true; await new Promise(r => window.setTimeout(r, 220)); try { await playClip("/futuristic-intro.wav", .68); } catch { /* secondary audio is optional */ } } catch { try { speak("Welcome to Aura."); welcomeStartedRef.current = true; } catch { welcomeLockRef.current = false; } } };
   useEffect(() => { const timer = window.setTimeout(() => void startWelcomeSequence(), 120); return () => window.clearTimeout(timer); }, []);
 
   const addAuraMessage = (text: string) => { setMessages(current => [...current, { role: "aura", text, time: getTime() }]); speak(text); };
