@@ -31,6 +31,8 @@ declare global {
   }
 }
 
+let welcomeSequenceStarted = false;
+
 const suggestions = [
   "What can you do?",
   "Set a reminder",
@@ -153,6 +155,8 @@ function App() {
   const previousIndexRef = useRef<{ x: number; y: number } | null>(null);
   const lastActionRef = useRef("");
   const welcomeStartedRef = useRef(false);
+  const welcomeLockRef = useRef(false);
+  const welcomeAudioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     const loadVoices = () => {
@@ -201,113 +205,188 @@ function App() {
         `No ${language} voice is installed; using the system voice`,
       );
   };
-  const playWelcomeSound = () => {
-    const AudioContextClass = window.AudioContext ||
-      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioContextClass) return;
-    const context = new AudioContextClass();
-    void context.resume();
-    const master = context.createGain();
-    master.gain.setValueAtTime(0.0001, context.currentTime);
-    master.gain.exponentialRampToValueAtTime(0.07, context.currentTime + 0.35);
-    master.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 4.2);
-    master.connect(context.destination);
-    [174.61, 261.63, 392].forEach((frequency, index) => {
-      const oscillator = context.createOscillator();
-      oscillator.type = index === 1 ? "sine" : "triangle";
-      oscillator.frequency.setValueAtTime(frequency, context.currentTime);
-      oscillator.frequency.exponentialRampToValueAtTime(frequency * 1.5, context.currentTime + 4.2);
-      oscillator.connect(master);
-      oscillator.start();
-      oscillator.stop(context.currentTime + 4.25);
-    });
-    window.setTimeout(() => void context.close(), 4600);
+  const pickCalmFemaleVoice = (available: SpeechSynthesisVoice[]) => {
+    const ranked = available
+      .map((voice) => {
+        const name = voice.name.toLowerCase();
+        let score = 0;
+        if (/aria|jenny|samantha|ava|sonia|serena|libby|neural|natural|online/i.test(name))
+          score += 10;
+        if (/female|zira|susan|hazel|karen|moira|tessa|victoria|catherine|eva|emma/i.test(name))
+          score += 7;
+        if (/google uk english female|microsoft aria|microsoft jenny/i.test(name)) score += 8;
+        if (/male|david|mark|guy|ryan|davis|george|ravi/i.test(name)) score -= 12;
+        if (voice.lang.toLowerCase().startsWith("en")) score += 3;
+        return { voice, score };
+      })
+      .sort((a, b) => b.score - a.score);
+    return ranked[0]?.score > 0 ? ranked[0].voice : available[0];
   };
-  const playPostWelcomeSound = () => {
-    const AudioContextClass = window.AudioContext ||
+  const playClip = async (src: string, volume = 1) => {
+    welcomeAudioRef.current?.pause();
+    const audio = new Audio(src);
+    audio.volume = volume;
+    welcomeAudioRef.current = audio;
+    await audio.play();
+    await new Promise<void>((resolve, reject) => {
+      audio.onended = () => resolve();
+      audio.onerror = () => reject(new Error(`Could not play ${src}`));
+    });
+  };
+  const playFuturisticIntro = async () => {
+    try {
+      await playClip("/futuristic-intro.wav", 0.78);
+    } catch {
+      playSynthesizedFuturisticIntro();
+    }
+  };
+  const playSynthesizedFuturisticIntro = () => {
+    const AudioContextClass =
+      window.AudioContext ||
       (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AudioContextClass) return;
     const context = new AudioContextClass();
     void context.resume();
+    const now = context.currentTime;
+    const length = 8.3;
     const master = context.createGain();
-    master.gain.setValueAtTime(0.0001, context.currentTime);
-    master.gain.exponentialRampToValueAtTime(0.06, context.currentTime + 2.5);
-    master.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 5.8);
+    master.gain.setValueAtTime(0.0001, now);
+    master.gain.exponentialRampToValueAtTime(0.085, now + 1.6);
+    master.gain.setValueAtTime(0.08, now + 6.2);
+    master.gain.exponentialRampToValueAtTime(0.0001, now + length);
     master.connect(context.destination);
 
-    [110, 164.81, 220].forEach((freq, i) => {
+    const drone = context.createOscillator();
+    drone.type = "sine";
+    drone.frequency.setValueAtTime(46.25, now);
+    const droneGain = context.createGain();
+    droneGain.gain.value = 0.55;
+    drone.connect(droneGain);
+    droneGain.connect(master);
+    drone.start(now);
+    drone.stop(now + length);
+
+    [220, 261.63, 329.63, 392].forEach((freq, index) => {
       const osc = context.createOscillator();
-      osc.type = i === 1 ? "triangle" : "sine";
-      osc.frequency.setValueAtTime(freq, context.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(freq * 1.05, context.currentTime + 3);
-      osc.frequency.exponentialRampToValueAtTime(freq * 0.95, context.currentTime + 6);
-      
+      osc.type = index % 2 ? "triangle" : "sine";
+      osc.frequency.setValueAtTime(freq, now);
+      osc.frequency.exponentialRampToValueAtTime(freq * 1.02, now + 5);
       const filter = context.createBiquadFilter();
       filter.type = "lowpass";
-      filter.frequency.setValueAtTime(400, context.currentTime);
-      filter.frequency.exponentialRampToValueAtTime(2000, context.currentTime + 3);
-      filter.Q.setValueAtTime(8, context.currentTime);
-      
+      filter.frequency.setValueAtTime(480, now);
+      filter.frequency.exponentialRampToValueAtTime(2400, now + 4.2);
+      filter.Q.value = 6;
+      const gain = context.createGain();
+      gain.gain.value = 0.12;
       osc.connect(filter);
-      filter.connect(master);
-      osc.start();
-      osc.stop(context.currentTime + 6);
+      filter.connect(gain);
+      gain.connect(master);
+      osc.start(now);
+      osc.stop(now + length);
     });
 
-    window.setTimeout(() => void context.close(), 6500);
+    [440, 523.25, 659.26, 783.99, 987.77, 1046.5].forEach((freq, index) => {
+      const start = now + 0.6 + index * 0.72;
+      const osc = context.createOscillator();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq, start);
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.16, start + 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 1.7);
+      osc.connect(gain);
+      gain.connect(master);
+      osc.start(start);
+      osc.stop(start + 1.75);
+    });
+
+    window.setTimeout(() => void context.close(), (length + 0.4) * 1000);
   };
-  const speakWelcome = () => {
-    if (!("speechSynthesis" in window)) return;
-    
-    const attemptSpeak = () => {
-      const availableVoices = window.speechSynthesis.getVoices();
-      if (availableVoices.length === 0) {
-        window.setTimeout(attemptSpeak, 100);
+  const speakWelcomeFallback = () =>
+    new Promise<void>((resolve, reject) => {
+      if (!("speechSynthesis" in window)) {
+        reject(new Error("Speech synthesis is unavailable"));
         return;
       }
-
-      window.speechSynthesis.cancel();
-      const preferredFemale = availableVoices.find((option) =>
-        /female|samantha|zira|ava|aria|jenny|susan|google uk english female|microsoft.*female/i.test(option.name),
-      );
-      const languageVoice = availableVoices.find((option) =>
-        option.lang.toLowerCase().startsWith(language.slice(0, 2).toLowerCase()),
-      );
-      
-      const utterance = new SpeechSynthesisUtterance("Welcome to Aura");
-      utterance.voice = preferredFemale ?? languageVoice ?? availableVoices[0];
-      utterance.lang = utterance.voice?.lang ?? language;
-      utterance.rate = 0.55; 
-      utterance.pitch = 1.05;
-      utterance.volume = 1;
-      
-      let soundTriggered = false;
-      const triggerSound = () => {
-        if (soundTriggered) return;
-        soundTriggered = true;
-        playPostWelcomeSound();
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
       };
-
-      utterance.onend = triggerSound;
-      utterance.onerror = triggerSound;
-      
-      // Fallback in case onend doesn't fire after 8 seconds
-      window.setTimeout(triggerSound, 8000);
-
-      window.speechSynthesis.speak(utterance);
-    };
-
-    attemptSpeak();
-  };
+      const fail = () => {
+        if (settled) return;
+        settled = true;
+        reject(new Error("Welcome speech failed"));
+      };
+      const attempt = (tries = 0) => {
+        const available = window.speechSynthesis.getVoices();
+        if (!available.length && tries < 20) {
+          window.setTimeout(() => attempt(tries + 1), 80);
+          return;
+        }
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance("Welcome to Aura.");
+        const selected = pickCalmFemaleVoice(available);
+        if (selected) utterance.voice = selected;
+        utterance.lang = selected?.lang ?? "en-US";
+        utterance.rate = 0.86;
+        utterance.pitch = 0.96;
+        utterance.volume = 1;
+        utterance.onend = finish;
+        utterance.onerror = fail;
+        window.setTimeout(finish, 4500);
+        window.speechSynthesis.speak(utterance);
+      };
+      attempt();
+    });
   const startWelcomeSequence = () => {
-    if (welcomeStartedRef.current) return;
-    welcomeStartedRef.current = true;
-    playWelcomeSound();
-    speakWelcome();
+    if (welcomeSequenceStarted || welcomeStartedRef.current || welcomeLockRef.current) return;
+    welcomeLockRef.current = true;
+    const run = async () => {
+      try {
+        const voice = new Audio("/welcome-to-aura.mp3");
+        voice.volume = 1;
+        welcomeAudioRef.current?.pause();
+        welcomeAudioRef.current = voice;
+        await voice.play();
+        welcomeStartedRef.current = true;
+        welcomeSequenceStarted = true;
+        await new Promise<void>((resolve, reject) => {
+          voice.onended = () => resolve();
+          voice.onerror = () => reject(new Error("Welcome voice failed"));
+        });
+      } catch (error) {
+        const blocked =
+          error instanceof DOMException && error.name === "NotAllowedError";
+        if (blocked) {
+          welcomeLockRef.current = false;
+          return;
+        }
+        try {
+          await speakWelcomeFallback();
+          welcomeStartedRef.current = true;
+          welcomeSequenceStarted = true;
+        } catch {
+          welcomeLockRef.current = false;
+          return;
+        }
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 280));
+      await playFuturisticIntro();
+    };
+    void run();
   };
   useEffect(() => {
-    const timer = window.setTimeout(startWelcomeSequence, 350);
-    return () => window.clearTimeout(timer);
+    const timer = window.setTimeout(startWelcomeSequence, 280);
+    const unlock = () => startWelcomeSequence();
+    window.addEventListener("pointerdown", unlock);
+    window.addEventListener("keydown", unlock);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("keydown", unlock);
+    };
   }, []);
   const addAuraMessage = (text: string) => {
     setMessages((current) => [
@@ -606,7 +685,7 @@ function App() {
   return (
     <main className="app-shell">
       {welcomeOpen && (
-        <div className="welcome-backdrop" role="dialog" aria-modal="true" aria-label="Welcome to Aura">
+        <div className="welcome-backdrop" role="dialog" aria-modal="true" aria-label="Welcome to Aura" onPointerDown={startWelcomeSequence}>
           <div className="welcome-dialog">
             <div className="welcome-orbit"><img src="/aura-face.gif.gif" alt="Aura" /></div>
             <p className="eyebrow">YOUR VOICE-FIRST ASSISTANT</p>
