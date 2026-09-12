@@ -19,7 +19,7 @@ function geminiApi(): Plugin {
           const messages = body.messages ?? []
           if (!messages.length) throw new Error('A message is required.')
           const apiKey = process.env.GEMINI_API_KEY
-          if (!apiKey) throw new Error('GEMINI_API_KEY is missing. Add it to aura-ai/.env.')
+          if (!apiKey) throw new Error('Aura is not configured on this server yet. Please contact the site administrator.')
           const ai = new GoogleGenAI({ apiKey })
           const result = await ai.models.generateContent({
             model: 'gemini-3.6-flash',
@@ -33,14 +33,13 @@ function geminiApi(): Plugin {
           const quotaLimited = rawMessage.includes('RESOURCE_EXHAUSTED') || rawMessage.includes('quota') || rawMessage.includes('429')
           response.statusCode = quotaLimited ? 429 : 500
           response.setHeader('Content-Type', 'application/json')
-          response.end(JSON.stringify({ error: quotaLimited ? 'Gemini free-tier quota is temporarily exhausted. Please wait about 20 seconds or check your Gemini billing/quota settings.' : rawMessage }))
+          response.end(JSON.stringify({ error: quotaLimited ? 'Aura is temporarily busy. Please try again shortly.' : rawMessage }))
         }
       })
     },
   }
 }
 
-// https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   process.env.GEMINI_API_KEY = env.GEMINI_API_KEY
