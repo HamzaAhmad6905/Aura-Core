@@ -62,6 +62,46 @@ const getGreeting = () => {
   if (hour < 22) return "Good evening";
   return "Good night";
 };
+const CHAT_STORAGE_KEY = "aura-chat-history";
+const SETTINGS_STORAGE_KEY = "aura-settings";
+type Settings = {
+  voiceOutputEnabled: boolean;
+  persistChatEnabled: boolean;
+  gestureAutomationEnabled: boolean;
+};
+const defaultSettings: Settings = {
+  voiceOutputEnabled: true,
+  persistChatEnabled: true,
+  gestureAutomationEnabled: true,
+};
+const loadSettings = (): Settings => {
+  try {
+    const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!raw) return defaultSettings;
+    return { ...defaultSettings, ...(JSON.parse(raw) as Partial<Settings>) };
+  } catch {
+    return defaultSettings;
+  }
+};
+type GestureLogEntry = { name: string; action: string; time: string };
+type Tab = "assistant" | "activity" | "automations";
+const defaultMessages: Message[] = [
+  {
+    role: "aura",
+    text: "Good morning. I’m Aura, your voice-first assistant. How can I help?",
+    time: getTime(),
+  },
+];
+const loadStoredMessages = (): Message[] => {
+  try {
+    const raw = window.localStorage.getItem(CHAT_STORAGE_KEY);
+    if (!raw) return defaultMessages;
+    const parsed = JSON.parse(raw) as Message[];
+    return Array.isArray(parsed) && parsed.length ? parsed : defaultMessages;
+  } catch {
+    return defaultMessages;
+  }
+};
 const modelUrl =
   "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
 const wasmUrl =
@@ -135,14 +175,18 @@ function App() {
   const [connectionsOpen, setConnectionsOpen] = useState(false);
   const [oauthStatus, setOauthStatus] = useState("");
   const [welcomeOpen, setWelcomeOpen] = useState(true);
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      role: "aura",
-      text: "Good morning. I’m Aura, your voice-first assistant. How can I help?",
-      time: getTime(),
-    },
-  ]);
+  const [messages, setMessages] = useState<Message[]>(loadStoredMessages);
+  const [isThinking, setIsThinking] = useState(false);
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState<Tab>("assistant");
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [settings, setSettings] = useState<Settings>(loadSettings);
+  const [gestureLog, setGestureLog] = useState<GestureLogEntry[]>([]);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [clock, setClock] = useState(getTime);
+  const [devTerminalOpen, setDevTerminalOpen] = useState(false);
   const voicesRef = useRef<VoiceOption[]>([]);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const microphoneRef = useRef<MediaStream | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -174,8 +218,60 @@ function App() {
       if (frameRef.current) cancelAnimationFrame(frameRef.current);
     };
   }, []);
+  useEffect(() => {
+    try {
+      if (settings.persistChatEnabled) {
+        window.localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages));
+      } else {
+        window.localStorage.removeItem(CHAT_STORAGE_KEY);
+      }
+    } catch {
+      // Storage can fail in private browsing or when full; chat still works in-memory.
+    }
+  }, [messages, settings.persistChatEnabled]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+    } catch {
+      // Settings just won't persist across reloads; the app still works.
+    }
+  }, [settings]);
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(getTime()), 30000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const toggleSetting = (key: keyof Settings) => {
+    setSettings((current) => ({ ...current, [key]: !current[key] }));
+  };
+  const stopSpeaking = () => {
+    window.speechSynthesis?.cancel();
+    setIsSpeaking(false);
+    setVoiceStatus("Tap the microphone and speak");
+  };
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, isThinking]);
+  const clearChat = () => {
+    setMessages(defaultMessages);
+    window.speechSynthesis?.cancel();
+    setVoiceStatus("Tap the microphone and speak");
+    try {
+      window.localStorage.removeItem(CHAT_STORAGE_KEY);
+    } catch {
+      // Ignore storage errors; the in-memory chat is already cleared.
+    }
+  };
+  const copyMessage = async (text: string, index: number) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedIndex(index);
+      window.setTimeout(() => setCopiedIndex((current) => (current === index ? null : current)), 1500);
+    } catch {
+      setVoiceStatus("Could not copy to clipboard");
+    }
+  };
   const speak = (text: string) => {
-    if (muted || !("speechSynthesis" in window)) return;
+    if (muted || !settings.voiceOutputEnabled || !("speechSynthesis" in window)) return;
     window.speechSynthesis.cancel();
     const matching = voices.filter((option) =>
       option.lang.toLowerCase().startsWith(language.slice(0, 2).toLowerCase()),
@@ -193,8 +289,18 @@ function App() {
     utterance.lang = selected?.lang ?? language;
     utterance.rate = 0.94;
     utterance.pitch = 1;
-    utterance.onstart = () => setVoiceStatus(`Speaking in ${language}`);
-    utterance.onend = () => setVoiceStatus("Tap the microphone and speak");
+    utterance.onstart = () => {
+      setIsSpeaking(true);
+      setVoiceStatus(`Speaking in ${language}`);
+    };
+    utterance.onend = () => {
+      setIsSpeaking(false);
+      setVoiceStatus("Tap the microphone and speak");
+    };
+    utterance.onerror = () => {
+      setIsSpeaking(false);
+      setVoiceStatus("Tap the microphone and speak");
+    };
     window.speechSynthesis.speak(utterance);
     if (!selected)
       setVoiceStatus(
@@ -341,6 +447,7 @@ function App() {
     setOauthStatus("Permission window opened. Complete the provider consent screen, then return to Aura.");
   };
   const answer = async (question: string) => {
+    if (!question.trim() || isThinking) return;
     const userMessage = {
       role: "user" as const,
       text: question,
@@ -355,6 +462,7 @@ function App() {
     setMessages((current) => [...current, userMessage]);
     setInput("");
     setVoiceStatus("Thinking...");
+    setIsThinking(true);
     try {
       const result = await fetch("/api/chat", {
         method: "POST",
@@ -371,6 +479,8 @@ function App() {
         error instanceof Error ? error.message : "Unable to reach Gemini.",
       );
       setVoiceStatus("Tap the microphone and speak");
+    } finally {
+      setIsThinking(false);
     }
   };
   const toggleListening = async () => {
@@ -445,12 +555,17 @@ function App() {
     lastActionRef.current = name;
     setGesture(name);
     setGestureAction(action);
+    setGestureLog((current) => [{ name, action, time: getTime() }, ...current].slice(0, 30));
+    if (!settings.gestureAutomationEnabled) return;
     if (name === "Pinch In") setZoom((value) => Math.min(1.35, value + 0.05));
     if (name === "Pinch & Spread")
       setZoom((value) => Math.max(0.8, value - 0.05));
     if (name === "Open Palm") {
-      setMuted(true);
-      window.speechSynthesis?.cancel();
+      setMuted((value) => {
+        const next = !value;
+        if (next) window.speechSynthesis?.cancel();
+        return next;
+      });
     }
     if (name === "Thumbs Up")
       addAuraMessage("Approved. I’m ready for the next action.");
@@ -460,6 +575,7 @@ function App() {
       addAuraMessage(
         "Vision audit ready. I captured the peace gesture for inspection.",
       );
+    if (name === "Rock On / Horns") setDevTerminalOpen((value) => !value);
     if (name === "Three-Finger Claw") {
       const log = new Blob(
         [`Aura gesture log: ${new Date().toISOString()} - ${name}`],
@@ -623,44 +739,54 @@ function App() {
             AURA<span className="brand-dot">.</span>
           </span>
           <small>AI ASSISTANT</small>
+          <span className="pro-badge">PRO</span>
         </div>
         <div className="status">
           <span className="status-dot" /> SYSTEM ONLINE{" "}
-          <span className="divider" /> AURA ACTIVE
+          <span className="divider" /> {clock}
         </div>
       </header>
       <section className="dashboard">
         <aside className="sidebar">
           <p className="eyebrow">WORKSPACE</p>
           <nav>
-            <button className="nav-item active">
+            <button
+              className={`nav-item ${activeTab === "assistant" ? "active" : ""}`}
+              onClick={() => setActiveTab("assistant")}
+            >
               <span>◈</span> Assistant <b>1</b>
             </button>
-            <button className="nav-item">
+            <button
+              className={`nav-item ${activeTab === "activity" ? "active" : ""}`}
+              onClick={() => setActiveTab("activity")}
+            >
               <span>◷</span> Activity
             </button>
-            <button className="nav-item">
+            <button
+              className={`nav-item ${activeTab === "automations" ? "active" : ""}`}
+              onClick={() => setActiveTab("automations")}
+            >
               <span>⌁</span> Automations
             </button>
           </nav>
           <div className="side-divider" />
           <p className="eyebrow">CONNECTED</p>
-          <div className="connection">
+          <button className="connection" onClick={() => setConnectionsOpen(true)}>
             <span className="connection-icon">▣</span>
             <span>
               <strong>Calendar</strong>
               <small>Synced just now</small>
             </span>
-            <i />
-          </div>
-          <div className="connection">
+            <i className="connected" />
+          </button>
+          <button className="connection" onClick={() => setConnectionsOpen(true)}>
             <span className="connection-icon">◉</span>
             <span>
               <strong>Music</strong>
               <small>Ready to play</small>
             </span>
-            <i />
-          </div>
+            <i className="connected" />
+          </button>
           <button className="side-footer" onClick={() => setConnectionsOpen(true)}>
             ⚙ Connect apps <span>›</span>
           </button>
@@ -674,18 +800,44 @@ function App() {
               </h1>
               <p className="subtitle">Your day, in focus.</p>
             </div>
-            <button className="icon-button" aria-label="Open notifications">
+            <button
+              className="icon-button"
+              aria-label="Open notifications"
+              onClick={() => setNotificationsOpen((open) => !open)}
+            >
               ♢<em />
+              {notificationsOpen && (
+                <div className="notif-dropdown" role="menu">
+                  <p className="notif-title">What's new</p>
+                  <ul>
+                    <li>Chat auto-scrolls and remembers history</li>
+                    <li>Typing indicator while Aura thinks</li>
+                    <li>Stop button for long spoken replies</li>
+                    <li>Activity log + Automations panel added</li>
+                  </ul>
+                </div>
+              )}
             </button>
           </div>
+          {activeTab === "assistant" && (
+            <>
           <div className="feature-grid">
             <section className="chat-panel panel">
               <div className="panel-head">
                 <div>
                   <span className="live-dot" /> <strong>CONVERSATION</strong>
                 </div>
-                <select
-                  className="language-select"
+                <div className="panel-head-actions">
+                  <button
+                    type="button"
+                    className="clear-chat"
+                    onClick={clearChat}
+                    aria-label="Clear conversation"
+                  >
+                    ⟲ Clear
+                  </button>
+                  <select
+                    className="language-select"
                   value={language}
                   onChange={(event) => setLanguage(event.target.value)}
                   aria-label="Voice language"
@@ -698,13 +850,24 @@ function App() {
                   <option value="hi-IN">हिन्दी</option>
                   <option value="ur-PK">اردو</option>
                   <option value="ja-JP">日本語</option>
-                  <option value="pt-BR">Português</option>
-                </select>
+                    <option value="pt-BR">Português</option>
+                  </select>
+                </div>
               </div>
               <div className="voice-controls">
                 <span className={listening ? "voice-live" : ""}>
                   ● {voiceStatus}
                 </span>
+                {isSpeaking && (
+                  <button
+                    type="button"
+                    className="stop-speaking"
+                    onClick={stopSpeaking}
+                    aria-label="Stop reading reply aloud"
+                  >
+                    ■ Stop audio
+                  </button>
+                )}
                 <select
                   value={voiceName}
                   onChange={(event) => setVoiceName(event.target.value)}
@@ -742,16 +905,42 @@ function App() {
                     </div>
                     <div>
                       <p>{message.text}</p>
-                      <time>{message.time}</time>
+                      <div className="message-footer">
+                        <time>{message.time}</time>
+                        {message.role === "aura" && (
+                          <button
+                            type="button"
+                            className="copy-message"
+                            onClick={() => void copyMessage(message.text, index)}
+                            aria-label="Copy message"
+                          >
+                            {copiedIndex === index ? "Copied ✓" : "Copy"}
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))}
+                {isThinking && (
+                  <div className="message aura" aria-live="polite">
+                    <div className="message-avatar">
+                      <img src="/aura-face.gif.gif" alt="Aura" />
+                    </div>
+                    <div>
+                      <p className="typing-indicator">
+                        <span /><span /><span />
+                      </p>
+                    </div>
+                  </div>
+                )}
+                <div ref={messagesEndRef} />
               </div>
               <div className="suggestions">
                 {suggestions.map((suggestion) => (
                   <button
                     key={suggestion}
                     onClick={() => void answer(suggestion)}
+                    disabled={isThinking}
                   >
                     {suggestion} <span>↗</span>
                   </button>
@@ -768,16 +957,22 @@ function App() {
                   value={input}
                   onChange={(event) => setInput(event.target.value)}
                   placeholder="Ask Aura anything..."
+                  disabled={isThinking}
                 />
                 <button
                   type="button"
                   className={`mic ${listening ? "listening" : ""}`}
                   onClick={toggleListening}
                   aria-label="Toggle voice input"
+                  disabled={isThinking}
                 >
                   ♩
                 </button>
-                <button className="send" aria-label="Send message">
+                <button
+                  className="send"
+                  aria-label="Send message"
+                  disabled={isThinking || !input.trim()}
+                >
                   ↑
                 </button>
               </form>
@@ -790,13 +985,23 @@ function App() {
                     {cameraOn ? "ACTIVE" : "STANDBY"}
                   </span>
                 </div>
-                <button
-                  className="toggle"
-                  onClick={toggleCamera}
-                  aria-label="Toggle camera"
-                >
-                  <span className={cameraOn ? "on" : ""} />
-                </button>
+                <div className="panel-head-actions">
+                  <button
+                    type="button"
+                    className="clear-chat"
+                    onClick={() => setDevTerminalOpen((value) => !value)}
+                    aria-label="Toggle developer terminal"
+                  >
+                    {"</>"} Terminal
+                  </button>
+                  <button
+                    className="toggle"
+                    onClick={toggleCamera}
+                    aria-label="Toggle camera"
+                  >
+                    <span className={cameraOn ? "on" : ""} />
+                  </button>
+                </div>
               </div>
               <div className={`camera-view ${cameraOn ? "camera-active" : ""}`}>
                 <video
@@ -854,8 +1059,121 @@ function App() {
               </div>
             </section>
           </div>
+            </>
+          )}
+          {activeTab === "activity" && (
+            <section className="panel activity-panel">
+              <div className="panel-head">
+                <div>
+                  <strong>ACTIVITY LOG</strong>
+                  <span className="pill">{gestureLog.length} events</span>
+                </div>
+                {gestureLog.length > 0 && (
+                  <button type="button" className="clear-chat" onClick={() => setGestureLog([])}>
+                    ⟲ Clear
+                  </button>
+                )}
+              </div>
+              <div className="activity-body">
+                <div className="activity-summary">
+                  <div>
+                    <small>MESSAGES THIS SESSION</small>
+                    <strong>{messages.length}</strong>
+                  </div>
+                  <div>
+                    <small>GESTURES CAPTURED</small>
+                    <strong>{gestureLog.length}</strong>
+                  </div>
+                  <div>
+                    <small>CAMERA</small>
+                    <strong>{cameraOn ? "Active" : "Standby"}</strong>
+                  </div>
+                </div>
+                {gestureLog.length === 0 ? (
+                  <p className="activity-empty">
+                    No gestures captured yet. Turn on the camera from the Assistant tab and show Aura a hand
+                    sign — activity will appear here.
+                  </p>
+                ) : (
+                  <ul className="activity-list">
+                    {gestureLog.map((entry, index) => (
+                      <li key={`${entry.time}-${index}`}>
+                        <span className="activity-dot" />
+                        <div>
+                          <strong>{entry.name}</strong>
+                          <span>{entry.action}</span>
+                        </div>
+                        <time>{entry.time}</time>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </section>
+          )}
+          {activeTab === "automations" && (
+            <section className="panel automations-panel">
+              <div className="panel-head">
+                <div>
+                  <strong>AUTOMATIONS</strong>
+                  <span className="pill">Frontend controls</span>
+                </div>
+              </div>
+              <div className="automation-row">
+                <span>
+                  <strong>Read replies aloud</strong>
+                  <small>Speak every Aura response using text-to-speech</small>
+                </span>
+                <button
+                  className="toggle"
+                  onClick={() => toggleSetting("voiceOutputEnabled")}
+                  aria-pressed={settings.voiceOutputEnabled}
+                  aria-label="Toggle read replies aloud"
+                >
+                  <span className={settings.voiceOutputEnabled ? "on" : ""} />
+                </button>
+              </div>
+              <div className="automation-row">
+                <span>
+                  <strong>Save chat history</strong>
+                  <small>Keep your conversation saved on this device between visits</small>
+                </span>
+                <button
+                  className="toggle"
+                  onClick={() => toggleSetting("persistChatEnabled")}
+                  aria-pressed={settings.persistChatEnabled}
+                  aria-label="Toggle save chat history"
+                >
+                  <span className={settings.persistChatEnabled ? "on" : ""} />
+                </button>
+              </div>
+              <div className="automation-row">
+                <span>
+                  <strong>Gesture automations</strong>
+                  <small>Let hand gestures trigger actions (zoom, mute, approve, etc.)</small>
+                </span>
+                <button
+                  className="toggle"
+                  onClick={() => toggleSetting("gestureAutomationEnabled")}
+                  aria-pressed={settings.gestureAutomationEnabled}
+                  aria-label="Toggle gesture automations"
+                >
+                  <span className={settings.gestureAutomationEnabled ? "on" : ""} />
+                </button>
+              </div>
+              <p className="automations-note">
+                Gestures are still detected and logged in Activity even when automations are off — only the
+                resulting action (zoom, mute, message, download) is skipped.
+              </p>
+            </section>
+          )}
+          {activeTab === "assistant" && (
           <div className="quick-row">
-            <div>
+            <button
+              type="button"
+              onClick={() => void answer("What's on my schedule today?")}
+              disabled={isThinking}
+            >
               <span className="quick-icon">◷</span>
               <span>
                 <small>NEXT UP</small>
@@ -863,8 +1181,12 @@ function App() {
                   Team standup <b>in 24 min</b>
                 </strong>
               </span>
-            </div>
-            <div>
+            </button>
+            <button
+              type="button"
+              onClick={() => void answer("What is the weather like today?")}
+              disabled={isThinking}
+            >
               <span className="quick-icon weather">☼</span>
               <span>
                 <small>LOCAL WEATHER</small>
@@ -872,18 +1194,27 @@ function App() {
                   Live lookup <b>Ask Aura</b>
                 </strong>
               </span>
-            </div>
-            <div>
+            </button>
+            <button
+              type="button"
+              className={muted ? "focus-active" : ""}
+              onClick={() => {
+                setMuted((value) => !value);
+                if (muted) setVoiceStatus("Tap the microphone and speak");
+                else window.speechSynthesis?.cancel();
+              }}
+            >
               <span className="quick-icon focus">⌾</span>
               <span>
                 <small>FOCUS MODE</small>
                 <strong>
                   {muted ? "Privacy mute" : "Ready"}{" "}
-                  <b>{muted ? "Open palm detected" : "Active"}</b>
+                  <b>{muted ? "Tap to unmute" : "Tap to mute"}</b>
                 </strong>
               </span>
-            </div>
+            </button>
           </div>
+          )}
           {connectionsOpen && (
             <div className="oauth-backdrop" role="dialog" aria-modal="true" aria-labelledby="oauth-title">
               <div className="oauth-dialog">
@@ -900,6 +1231,29 @@ function App() {
                 </div>
                 {oauthStatus && <p className="oauth-status">{oauthStatus}</p>}
                 <small className="oauth-note">Configure credentials in <b>.env</b>, then restart the dev server.</small>
+              </div>
+            </div>
+          )}
+          {devTerminalOpen && (
+            <div className="dev-terminal" role="log" aria-label="Developer terminal">
+              <div className="dev-terminal-head">
+                <span>
+                  <span className="dot red" /><span className="dot yellow" /><span className="dot green" />
+                  aura://terminal
+                </span>
+                <button type="button" onClick={() => setDevTerminalOpen(false)} aria-label="Close terminal">×</button>
+              </div>
+              <div className="dev-terminal-body">
+                <p>&gt; aura --status</p>
+                <p className="dim">camera: {cameraOn ? "on" : "off"} · voice-output: {settings.voiceOutputEnabled ? "on" : "off"} · muted: {String(muted)} · messages: {messages.length}</p>
+                <p>&gt; aura --activity --tail</p>
+                {gestureLog.slice(0, 8).map((entry, index) => (
+                  <p key={`${entry.time}-${index}`} className="dim">
+                    [{entry.time}] {entry.name} → {entry.action}
+                  </p>
+                ))}
+                {gestureLog.length === 0 && <p className="dim">[idle] no gesture events yet</p>}
+                <p className="cursor-line">&gt; <span className="blink">▌</span></p>
               </div>
             </div>
           )}
