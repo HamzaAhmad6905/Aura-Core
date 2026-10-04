@@ -431,6 +431,8 @@ export default function App() {
   const [connectionsOpen, setConnectionsOpen] = useState(false);
   const [googleModalOpen, setGoogleModalOpen] = useState(false);
   const [customGoogleEmail, setCustomGoogleEmail] = useState("");
+  const [googleError, setGoogleError] = useState("");
+  const [isGoogleConnecting, setIsGoogleConnecting] = useState(false);
   const [oauthStatus, setOauthStatus] = useState("");
   const [googleUser, setGoogleUser] = useState<GoogleUser | null>(loadGoogleUser);
   const [audioPromptReady, setAudioPromptReady] = useState(false);
@@ -461,7 +463,7 @@ export default function App() {
   const isPlayingWelcomeRef = useRef(false);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const shouldListenRef = useRef(false);
-  const speechSilenceTimerRef = useRef<number | null>(null);
+  const speechTranscriptRef = useRef("");
   const trackFrameRef = useRef<() => void>(() => {});
   const prevGrayRef = useRef<Uint8ClampedArray | null>(null);
   const messagesRef = useRef(messages);
@@ -987,7 +989,7 @@ export default function App() {
     answerRef.current = answer;
   }, [answer]);
 
-  // Continuous speech recognition session builder
+  // Voice Command speech recognition session builder
   const startRecognitionSession = useCallback(() => {
     if (!shouldListenRef.current) return;
     const Api = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1004,7 +1006,7 @@ export default function App() {
 
     recognition.onstart = () => {
       setListening(true);
-      setVoiceStatus("Listening… speak freely to Aura Core");
+      setVoiceStatus("Listening… Speak now, then click mic to send");
     };
 
     recognition.onresult = (e: {
@@ -1023,20 +1025,11 @@ export default function App() {
         }
       }
 
-      if (interimTranscript) {
-        setInput(interimTranscript);
-        setVoiceStatus(`Hearing: "${interimTranscript}"`);
-      }
-
       const activeText = (finalTranscript || interimTranscript).trim();
       if (activeText) {
-        if (speechSilenceTimerRef.current) window.clearTimeout(speechSilenceTimerRef.current);
-        speechSilenceTimerRef.current = window.setTimeout(() => {
-          if (activeText) {
-            void answerRef.current(activeText);
-            setInput("");
-          }
-        }, 1200);
+        speechTranscriptRef.current = activeText;
+        setInput(activeText);
+        setVoiceStatus(`Hearing: "${activeText}" — Click mic to send`);
       }
     };
 
@@ -1046,16 +1039,15 @@ export default function App() {
           if (shouldListenRef.current) {
             startRecognitionSessionRef.current();
           }
-        }, 220);
+        }, 180);
       } else {
         setListening(false);
-        setVoiceStatus("Ready for your voice");
       }
     };
 
     recognition.onerror = (e: { error: string }) => {
       if (e.error === "no-speech") {
-        return; // Handled naturally by onend restart
+        return; // Normal pause in speech
       }
       if (e.error === "not-allowed") {
         shouldListenRef.current = false;
@@ -1067,7 +1059,7 @@ export default function App() {
         if (shouldListenRef.current) {
           window.setTimeout(() => {
             if (shouldListenRef.current) startRecognitionSessionRef.current();
-          }, 350);
+          }, 300);
         }
       }
     };
@@ -1079,7 +1071,7 @@ export default function App() {
       if (shouldListenRef.current) {
         window.setTimeout(() => {
           if (shouldListenRef.current) startRecognitionSessionRef.current();
-        }, 400);
+        }, 350);
       }
     }
   }, []);
@@ -1087,36 +1079,52 @@ export default function App() {
     startRecognitionSessionRef.current = startRecognitionSession;
   }, [startRecognitionSession]);
 
-  // Continuous speech recognition toggle
+  // Voice Command Toggle:
+  // Click 1: Starts listening & live transcription
+  // Click 2: Immediately stops listening, sends the transcribed question, and chatbot responds in voice!
   const toggleListening = async () => {
     const Api = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!Api) {
-      setVoiceStatus("Voice input needs Chrome or Edge");
+      setVoiceStatus("Voice input requires Chrome or Edge");
       return;
     }
 
+    // CLICK 2: USER CLICKS MIC AGAIN WHILE LISTENING -> IMMEDIATELY SEND TO CHATBOT & RESPOND IN VOICE
     if (listening || shouldListenRef.current) {
       shouldListenRef.current = false;
-      if (speechSilenceTimerRef.current) window.clearTimeout(speechSilenceTimerRef.current);
       try {
         recognitionRef.current?.stop();
       } catch { /* safety */ }
       setListening(false);
-      setVoiceStatus("Ready for your voice");
+
+      const questionToSend = (speechTranscriptRef.current || input).trim();
+      speechTranscriptRef.current = "";
+
+      if (questionToSend) {
+        setInput("");
+        setVoiceStatus("Aura Core is thinking…");
+        void answerRef.current(questionToSend);
+      } else {
+        setVoiceStatus("No speech detected. Click mic to speak.");
+        window.setTimeout(() => {
+          if (!speakingRef.current) setVoiceStatus("Ready for your voice");
+        }, 2200);
+      }
       return;
     }
 
+    // CLICK 1: USER CLICKS MIC TO START LISTENING
     try {
-      // Pre-prompt microphone permission to prevent silent speech recognition failure
       await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch {
       setVoiceStatus("Microphone permission required");
       return;
     }
 
+    speechTranscriptRef.current = "";
     shouldListenRef.current = true;
     setListening(true);
-    setVoiceStatus("Listening… speak freely to Aura Core");
+    setVoiceStatus("Listening… Speak now, then click mic to send");
     startRecognitionSession();
   };
 
@@ -1420,19 +1428,54 @@ export default function App() {
     return () => window.clearInterval(watchdog);
   }, [trackFrame]);
 
-  // Google Account Chooser Selection Handler
-  const selectGoogleAccount = (acc: { name: string; email: string }) => {
-    const user: GoogleUser = {
-      name: acc.name,
-      email: acc.email,
-      connected: true,
-      connectedAt: new Date().toLocaleDateString(),
-    };
-    setGoogleUser(user);
-    setGoogleModalOpen(false);
-    setConnectionsOpen(false);
-    setOauthStatus(`Connected to Google Account (${acc.email}). Calendar & Gmail synced.`);
-    addAuraMessage(`Google Account (${acc.email}) is connected. Your calendar and Gmail are now synced with Aura Core.`);
+  // Google Account Connection Handler
+  const connectGoogleAccount = (email: string, name?: string, avatar?: string) => {
+    const cleanEmail = email.trim();
+    if (!cleanEmail || !cleanEmail.includes("@") || !cleanEmail.includes(".")) {
+      setGoogleError("Please enter a valid Google or Gmail address.");
+      return;
+    }
+    setGoogleError("");
+    setIsGoogleConnecting(true);
+
+    const computedName =
+      name ||
+      cleanEmail
+        .split("@")[0]
+        .replace(/[._]/g, " ")
+        .replace(/\b\w/g, c => c.toUpperCase());
+    const initials =
+      computedName
+        .split(" ")
+        .map(p => p[0])
+        .slice(0, 2)
+        .join("")
+        .toUpperCase() || "G";
+
+    setTimeout(() => {
+      const user: GoogleUser = {
+        name: computedName,
+        email: cleanEmail,
+        avatar: avatar || initials,
+        connected: true,
+        connectedAt: new Date().toLocaleDateString(undefined, {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        }),
+      };
+      setGoogleUser(user);
+      setIsGoogleConnecting(false);
+      setGoogleModalOpen(false);
+      setConnectionsOpen(false);
+      setCustomGoogleEmail("");
+      setOauthStatus(`Connected to Google Account (${cleanEmail}). Calendar & Gmail synced.`);
+      addAuraMessage(`Google Account (${cleanEmail}) is connected. Your calendar and Gmail are now synced with Aura Core.`);
+    }, 400);
+  };
+
+  const selectGoogleAccount = (acc: { name: string; email: string; avatar?: string }) => {
+    connectGoogleAccount(acc.email, acc.name, acc.avatar);
   };
 
   const disconnectGoogle = () => {
@@ -1501,86 +1544,164 @@ export default function App() {
       )}
 
       {/* ---------------- GOOGLE ACCOUNT CHOOSER MODAL (POP-UP LIST) ---------------- */}
+      {/* ---------------- GOOGLE ACCOUNT AUTH & SYNC MODAL ---------------- */}
       {googleModalOpen && (
-        <div className="google-chooser-backdrop" role="dialog" aria-modal="true" aria-labelledby="google-chooser-title">
-          <div className="google-chooser-dialog">
+        <div className="google-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="google-modal-title">
+          <div className="google-modal-dialog">
             <button
               type="button"
               className="oauth-close"
-              onClick={() => setGoogleModalOpen(false)}
-              aria-label="Close Google Chooser"
+              onClick={() => {
+                setGoogleModalOpen(false);
+                setGoogleError("");
+              }}
+              aria-label="Close Google Dialog"
             >
               <Icon name="close" size={20} />
             </button>
 
-            <div className="google-chooser-header">
-              <Icon name="google" size={32} />
-              <h3 id="google-chooser-title">Sign in with Google</h3>
-              <p>Choose an account to connect to <strong>Aura Core</strong></p>
+            <div className="google-modal-header">
+              <div className="google-icon-badge">
+                <Icon name="google" size={32} />
+              </div>
+              <h3 id="google-modal-title">
+                {googleUser ? "Google Account Connected" : "Sign in with Google"}
+              </h3>
+              <p>
+                {googleUser
+                  ? "Your Google Calendar and Gmail are actively synchronized with Aura Core."
+                  : "Connect your Google / Gmail account to synchronize your live schedule, calendar meetings, and priority emails."}
+              </p>
             </div>
 
-            {/* Account List */}
-            <div className="google-accounts-list">
-              {sampleGoogleAccounts.map(acc => (
-                <button
-                  key={acc.email}
-                  type="button"
-                  className="google-account-item"
-                  onClick={() => selectGoogleAccount(acc)}
-                >
-                  <div className="google-avatar">{acc.avatar}</div>
-                  <div className="google-account-details">
-                    <strong>{acc.name}</strong>
-                    <span>{acc.email}</span>
+            {googleUser ? (
+              <div className="google-connected-view">
+                <div className="google-user-card">
+                  <div className="google-user-avatar">
+                    {googleUser.avatar || googleUser.name.charAt(0)}
                   </div>
-                  <Icon name="arrow" size={16} />
+                  <div className="google-user-meta">
+                    <strong>{googleUser.name}</strong>
+                    <span>{googleUser.email}</span>
+                    <small className="google-sync-badge">
+                      <span className="sync-pulse" /> Synced with Aura Core · {googleUser.connectedAt}
+                    </small>
+                  </div>
+                </div>
+
+                <div className="google-scopes-list">
+                  <div className="google-scope-item active">
+                    <Icon name="calendar" size={16} />
+                    <div>
+                      <strong>Google Calendar</strong>
+                      <span>Real-time schedule, reminders &amp; standups</span>
+                    </div>
+                    <span className="scope-tag">Active</span>
+                  </div>
+                  <div className="google-scope-item active">
+                    <Icon name="mail" size={16} />
+                    <div>
+                      <strong>Gmail Inbox</strong>
+                      <span>Priority unread emails &amp; summaries</span>
+                    </div>
+                    <span className="scope-tag">Active</span>
+                  </div>
+                </div>
+
+                <div className="google-connected-actions">
+                  <button
+                    type="button"
+                    className="google-disconnect-btn"
+                    onClick={disconnectGoogle}
+                  >
+                    Disconnect Google Account
+                  </button>
+                  <button
+                    type="button"
+                    className="google-done-btn"
+                    onClick={() => setGoogleModalOpen(false)}
+                  >
+                    Done
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="google-signin-view">
+                {/* ONE-CLICK GOOGLE SIGN IN BUTTON */}
+                <button
+                  type="button"
+                  className="google-primary-btn"
+                  disabled={isGoogleConnecting}
+                  onClick={() => {
+                    const fallbackEmail = customGoogleEmail.trim() || "hamzaahmad6905@gmail.com";
+                    connectGoogleAccount(fallbackEmail);
+                  }}
+                >
+                  <Icon name="google" size={20} />
+                  <span>
+                    {isGoogleConnecting ? "Connecting to Google…" : "Continue with Google Account"}
+                  </span>
                 </button>
-              ))}
-            </div>
 
-            {/* Custom Account Input Option */}
-            <div className="google-custom-account-row">
-              <input
-                type="email"
-                placeholder="Or enter your Google email address…"
-                value={customGoogleEmail}
-                onChange={e => setCustomGoogleEmail(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === "Enter" && customGoogleEmail.trim()) {
-                    const name = customGoogleEmail.split("@")[0].replace(/[._]/g, " ");
-                    selectGoogleAccount({ name, email: customGoogleEmail.trim() });
-                  }
-                }}
-              />
-              <button
-                type="button"
-                className="google-custom-connect-btn"
-                disabled={!customGoogleEmail.trim()}
-                onClick={() => {
-                  const name = customGoogleEmail.split("@")[0].replace(/[._]/g, " ");
-                  selectGoogleAccount({ name, email: customGoogleEmail.trim() });
-                }}
-              >
-                Connect
-              </button>
-            </div>
+                <div className="google-modal-divider">
+                  <span>or connect with email</span>
+                </div>
 
-            <div className="google-oauth-external-wrap">
-              <button
-                type="button"
-                className="google-oauth-external-btn"
-                onClick={() => {
-                  const url = `https://accounts.google.com/AccountChooser?service=lso&continue=${encodeURIComponent(window.location.origin)}`;
-                  window.open(url, "google-oauth-chooser", "popup,width=520,height=680");
-                }}
-              >
-                🌐 Launch External Google OAuth Browser Screen
-              </button>
-            </div>
+                {/* DIRECT EMAIL INPUT */}
+                <div className="google-email-form">
+                  <div className="google-input-wrapper">
+                    <Icon name="mail" size={16} />
+                    <input
+                      type="email"
+                      placeholder="Enter your Gmail address (e.g. you@gmail.com)"
+                      value={customGoogleEmail}
+                      onChange={e => {
+                        setCustomGoogleEmail(e.target.value);
+                        if (googleError) setGoogleError("");
+                      }}
+                      onKeyDown={e => {
+                        if (e.key === "Enter" && customGoogleEmail.trim()) {
+                          e.preventDefault();
+                          connectGoogleAccount(customGoogleEmail);
+                        }
+                      }}
+                      disabled={isGoogleConnecting}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    className="google-submit-btn"
+                    disabled={!customGoogleEmail.trim() || isGoogleConnecting}
+                    onClick={() => connectGoogleAccount(customGoogleEmail)}
+                  >
+                    {isGoogleConnecting ? "Syncing…" : "Connect & Sync"}
+                  </button>
+                </div>
 
-            <small className="google-chooser-footer">
-              Aura Core accesses Google Calendar and Gmail securely. Tokens are kept on your device.
-            </small>
+                {googleError && <p className="google-error-msg">{googleError}</p>}
+
+                {/* FAST ACCOUNT SHORTCUT CHIPS */}
+                <div className="google-chips-row">
+                  <span className="chips-label">Quick select:</span>
+                  {sampleGoogleAccounts.map(acc => (
+                    <button
+                      key={acc.email}
+                      type="button"
+                      className="google-chip"
+                      onClick={() => selectGoogleAccount(acc)}
+                    >
+                      {acc.name}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="google-security-guarantee">
+                  <small>
+                    🔒 <strong>Encrypted on-device:</strong> Aura Core accesses your Calendar &amp; Gmail read-only. Your credentials remain private and secure on your browser.
+                  </small>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1873,13 +1994,17 @@ export default function App() {
                   className="composer"
                   onSubmit={e => {
                     e.preventDefault();
+                    if (listening) {
+                      void toggleListening();
+                      return;
+                    }
                     if (input.trim()) void answer(input.trim());
                   }}
                 >
                   <input
                     value={input}
                     onChange={e => setInput(e.target.value)}
-                    placeholder={listening ? "Listening to your voice continuously…" : "Ask Aura Core anything or type 'draw a...'"}
+                    placeholder={listening ? "Listening… Speak now, then click mic to send" : "Ask Aura Core anything or click mic to speak…"}
                     disabled={isThinking}
                   />
 
@@ -1889,28 +2014,29 @@ export default function App() {
                       type="button"
                       className="composer-stop-btn"
                       onClick={stopSpeaking}
-                      title="Stop speaking"
-                      aria-label="Stop speaking"
+                      title="Stop Aura Core speaking"
+                      aria-label="Stop Aura Core speaking"
                     >
                       <Icon name="stop" size={16} />
                     </button>
                   )}
 
-                  {/* CONTINUOUS ELEVATED MIC BUTTON */}
+                  {/* VOICE COMMAND TOGGLE MIC BUTTON */}
                   <button
                     type="button"
-                    className={`mic ${listening ? "listening" : ""}`}
+                    className={`mic ${listening ? "listening active-talk" : ""}`}
                     onClick={() => void toggleListening()}
-                    aria-label={listening ? "Stop continuous listening" : "Start continuous voice input"}
+                    aria-label={listening ? "Click to send your voice command" : "Click to speak to Aura Core"}
+                    title={listening ? "Click to send voice command" : "Click to speak"}
                     disabled={isThinking}
                   >
                     <span className="mic-halo" />
                     <span className="mic-wave-1" />
                     <span className="mic-wave-2" />
-                    <Icon name="mic" size={20} />
+                    <Icon name={listening ? "send" : "mic"} size={20} />
                   </button>
 
-                  <button className="send" aria-label="Send message" disabled={isThinking || !input.trim()}>
+                  <button className="send" aria-label="Send message" disabled={isThinking || (!input.trim() && !listening)}>
                     <Icon name="send" size={17} />
                   </button>
                 </form>

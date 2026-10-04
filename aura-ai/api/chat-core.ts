@@ -4,11 +4,11 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 export type ChatTurn = { role: string; text: string };
 
 const GEMINI_MODELS = [
-  "gemini-2.5-flash",
-  "gemini-2.0-flash",
-  "gemini-flash-latest",
-  "gemini-1.5-flash",
-  "gemini-1.5-flash-latest",
+  "gemini-3.5-flash-lite",
+  "gemini-3.5-flash",
+  "gemini-3.7-flash",
+  "gemini-3.8-flash",
+  "gemini-3.6-flash",
 ];
 
 export function getGeminiApiKey(): string {
@@ -107,14 +107,21 @@ export async function generateAuraReply(messages: ChatTurn[], language: string):
   const apiKey = getGeminiApiKey();
   if (!apiKey) return getLocalAuraReply(lastUserMessage, lang);
 
+  const timeoutPromise = new Promise<string>((_, reject) =>
+    setTimeout(() => reject(new Error("Timeout waiting for LLM response")), 6000)
+  );
+
   try {
-    return await generateWithNewSdk(apiKey, messages, lang);
+    return await Promise.race([generateWithNewSdk(apiKey, messages, lang), timeoutPromise]);
   } catch (newSdkErr) {
-    console.warn("Gemini @google/genai failed, trying legacy SDK:", newSdkErr instanceof Error ? newSdkErr.message : newSdkErr);
+    console.warn("Gemini primary model call failed or timed out, trying secondary fallback:", newSdkErr instanceof Error ? newSdkErr.message : newSdkErr);
     try {
-      return await generateWithLegacySdk(apiKey, messages, lang);
+      const secondaryTimeout = new Promise<string>((_, reject) =>
+        setTimeout(() => reject(new Error("Secondary timeout")), 3500)
+      );
+      return await Promise.race([generateWithLegacySdk(apiKey, messages, lang), secondaryTimeout]);
     } catch (legacyErr) {
-      console.warn("Gemini legacy SDK failed, using local fallback:", legacyErr instanceof Error ? legacyErr.message : legacyErr);
+      console.warn("Gemini secondary fallback failed, using instant local reply:", legacyErr instanceof Error ? legacyErr.message : legacyErr);
       return getLocalAuraReply(lastUserMessage, lang);
     }
   }
