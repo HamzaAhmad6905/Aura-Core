@@ -1,6 +1,6 @@
 export type ChatTurn = { role: string; text: string };
 
-const GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_MODEL = "gemini-3.8-flash";
 const GEMINI_REQUEST_TIMEOUT_MS = 18000;
 
 export function getGeminiApiKey(): string {
