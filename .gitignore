@@ -7,3 +7,5 @@ dist/
 !.env.example
 *.log
 .vscode/
+.vercel
+.env*

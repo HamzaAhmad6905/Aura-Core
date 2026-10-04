@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@google/genai": "^2.22.0",
-    "@mediapipe/tasks-vision": "^1.0.1",
+    "@google/generative-ai": "^0.24.1",
+    "@mediapipe/tasks-vision": "0.10.14",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
@@ -20,6 +21,7 @@
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
+    "@vercel/node": "^13.0.0",
     "@vitejs/plugin-react": "^6.1.1",
     "oxlint": "^1.81.0",
     "pdfkit": "^0.20.2",

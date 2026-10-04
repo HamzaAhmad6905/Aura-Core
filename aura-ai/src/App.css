@@ -1081,6 +1081,32 @@
   transform: scale(1.08);
 }
 
+.topbar-stop-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 13px;
+  border-radius: 999px;
+  background: rgba(255, 82, 119, 0.18);
+  border: 1px solid rgba(255, 82, 119, 0.6);
+  color: #ff5277;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  animation: stop-pulse 1.2s infinite;
+  transition: all 0.2s ease;
+}
+
+.topbar-stop-btn:hover {
+  background: rgba(255, 82, 119, 0.35);
+  border-color: #ff5277;
+  color: #ffffff;
+  transform: scale(1.05);
+  box-shadow: 0 0 16px rgba(255, 82, 119, 0.4);
+}
+
 /* --- Elevated Beautiful Mic Button --- */
 .mic {
   position: relative;
