@@ -1,0 +1,5 @@
+{
+  "name": "Aura Core",
+  "description": "Intelligent Voice & Vision AI assistant and creative studio.",
+  "capabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

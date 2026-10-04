@@ -1,14 +1,10 @@
 import { GoogleGenAI } from "@google/genai";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 
 export type ChatTurn = { role: string; text: string };
 
 const GEMINI_MODELS = [
-  "gemini-3.5-flash-lite",
-  "gemini-3.5-flash",
-  "gemini-3.7-flash",
   "gemini-3.8-flash",
-  "gemini-3.6-flash",
+  "gemini-flash-latest",
 ];
 
 export function getGeminiApiKey(): string {
@@ -16,7 +12,7 @@ export function getGeminiApiKey(): string {
     process.env.GEMINI_API_KEY ||
     process.env.GOOGLE_API_KEY ||
     process.env.GOOGLE_GENERATIVE_AI_API_KEY ||
-    Buffer.from("QVEuQWI4Uk42SndZT3o1RDhwNmlUUWdXWHpIdERlV0oydnlyVlU4cEFLdjdJX2FVRlF6MkE=", "base64").toString("utf-8")
+    ""
   );
 }
 
@@ -29,10 +25,10 @@ export function getLocalAuraReply(query: string, language: string): string {
     return "The current weather is 72°F (22°C) with clear skies and a gentle breeze. Perfect conditions for focus and outdoor breaks.";
   }
   if (q.includes("mail") || q.includes("email") || q.includes("gmail") || q.includes("inbox")) {
-    return "Your Gmail inbox currently has 3 unread messages: an update on Project Aura Core, a calendar invite, and a team summary.";
+    return "Your connected Gmail inbox has 3 unread messages: an update on Project Aura Core, a calendar invite, and a team summary.";
   }
   if (q.includes("who are you") || q.includes("what can you do") || q.includes("your name") || q.includes("features")) {
-    return "I am Aura Core, your voice-first, multimodal intelligent assistant and image creator. I can generate high-resolution images, track 12 precise hand gestures, manage your schedule, and execute workflows seamlessly.";
+    return "I am Aura Core, your voice-first, multimodal intelligent assistant and creative studio. I can generate high-resolution images, track 12 precise hand gestures, manage your schedule, and execute workflows seamlessly.";
   }
   if (q.includes("focus") || q.includes("productivity") || q.includes("tip")) {
     return "Here is a productivity tip: try the 25-minute Pomodoro method with deep breathing, and use gesture controls like Fist to stay in focus mode.";
@@ -50,7 +46,7 @@ export function getLocalAuraReply(query: string, language: string): string {
 }
 
 function systemInstruction(lang: string) {
-  return `You are Aura Core, an ultra-intelligent, calm, warm voice-first multimodal assistant. Reply concisely in 1 to 3 clear, natural spoken sentences. Respond in ${lang}. Do not use markdown bullet lists, asterisks, or heavy formatting because your answer will be spoken aloud to the user.`;
+  return `You are Aura Core, an ultra-intelligent, calm, warm voice-first multimodal assistant. Reply concisely in 1 to 2 clear, natural spoken sentences. Respond in ${lang}. Do not use markdown bullet lists, asterisks, or formatting because your answer will be spoken aloud to the user.`;
 }
 
 function toContents(messages: ChatTurn[]) {
@@ -63,15 +59,25 @@ function toContents(messages: ChatTurn[]) {
   return mapped.length ? mapped : [{ role: "user", parts: [{ text: "Hello Aura Core" }] }];
 }
 
-async function generateWithNewSdk(apiKey: string, messages: ChatTurn[], lang: string): Promise<string> {
-  const ai = new GoogleGenAI({ apiKey });
+async function generateWithGenAi(apiKey: string, messages: ChatTurn[], lang: string): Promise<string> {
+  const ai = new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        "User-Agent": "aistudio-build",
+      },
+    },
+  });
+
   let lastError: unknown;
   for (const model of GEMINI_MODELS) {
     try {
       const result = await ai.models.generateContent({
         model,
         contents: toContents(messages),
-        config: { systemInstruction: systemInstruction(lang) },
+        config: {
+          systemInstruction: systemInstruction(lang),
+        },
       });
       const text = result.text?.trim();
       if (text) return text;
@@ -79,26 +85,7 @@ async function generateWithNewSdk(apiKey: string, messages: ChatTurn[], lang: st
       lastError = err;
     }
   }
-  throw lastError instanceof Error ? lastError : new Error("Gemini new SDK failed");
-}
-
-async function generateWithLegacySdk(apiKey: string, messages: ChatTurn[], lang: string): Promise<string> {
-  const genAI = new GoogleGenerativeAI(apiKey);
-  let lastError: unknown;
-  for (const modelName of GEMINI_MODELS) {
-    try {
-      const model = genAI.getGenerativeModel({
-        model: modelName,
-        systemInstruction: systemInstruction(lang),
-      });
-      const result = await model.generateContent({ contents: toContents(messages) });
-      const text = result.response.text()?.trim();
-      if (text) return text;
-    } catch (err) {
-      lastError = err;
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error("Gemini legacy SDK failed");
+  throw lastError instanceof Error ? lastError : new Error("Gemini generation failed");
 }
 
 export async function generateAuraReply(messages: ChatTurn[], language: string): Promise<string> {
@@ -107,23 +94,16 @@ export async function generateAuraReply(messages: ChatTurn[], language: string):
   const apiKey = getGeminiApiKey();
   if (!apiKey) return getLocalAuraReply(lastUserMessage, lang);
 
+  // Fast response watchdog: resolve within 4.5 seconds to guarantee snappy replies
   const timeoutPromise = new Promise<string>((_, reject) =>
-    setTimeout(() => reject(new Error("Timeout waiting for LLM response")), 6000)
+    setTimeout(() => reject(new Error("Timeout waiting for LLM response")), 4500)
   );
 
   try {
-    return await Promise.race([generateWithNewSdk(apiKey, messages, lang), timeoutPromise]);
-  } catch (newSdkErr) {
-    console.warn("Gemini primary model call failed or timed out, trying secondary fallback:", newSdkErr instanceof Error ? newSdkErr.message : newSdkErr);
-    try {
-      const secondaryTimeout = new Promise<string>((_, reject) =>
-        setTimeout(() => reject(new Error("Secondary timeout")), 3500)
-      );
-      return await Promise.race([generateWithLegacySdk(apiKey, messages, lang), secondaryTimeout]);
-    } catch (legacyErr) {
-      console.warn("Gemini secondary fallback failed, using instant local reply:", legacyErr instanceof Error ? legacyErr.message : legacyErr);
-      return getLocalAuraReply(lastUserMessage, lang);
-    }
+    return await Promise.race([generateWithGenAi(apiKey, messages, lang), timeoutPromise]);
+  } catch (err) {
+    console.warn("Gemini call fell back to local reply:", err instanceof Error ? err.message : err);
+    return getLocalAuraReply(lastUserMessage, lang);
   }
 }
 

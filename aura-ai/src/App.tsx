@@ -1,5 +1,14 @@
-import { useEffect, useRef, useState, type ReactNode, useCallback } from "react";
+import { useEffect, useRef, useState, type ReactNode, useCallback, memo } from "react";
 import { FilesetResolver, HandLandmarker, type HandLandmarkerResult } from "@mediapipe/tasks-vision";
+import {
+  initAuth,
+  googleSignIn,
+  googleLogout,
+  fetchCalendarEvents,
+  fetchGmailMessages,
+  type CalendarEvent,
+  type GmailSnippet,
+} from "./googleAuth";
 import "./App.css";
 
 type Message = {
@@ -295,7 +304,7 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
 }
 
 function AuraFace({ className, alt = "Aura Core" }: { className?: string; alt?: string }) {
-  const [src, setSrc] = useState("/aura-face.gif.gif");
+  const [src, setSrc] = useState("/aura-core-logo.jpg");
   return (
     <img
       className={className}
@@ -307,7 +316,8 @@ function AuraFace({ className, alt = "Aura Core" }: { className?: string; alt?: 
 }
 
 // -------------------------------------------------------------
-// EXACT 12 GESTURES CLASSIFIER (PIXEL LOGIC PER USER SPECIFICATION)
+// EXACT 18 NEURONAL VISION GESTURES CLASSIFIER
+// High-precision pixel geometric classification for multimodal interaction
 // -------------------------------------------------------------
 function classifyPixelGestures(
   pts: { x: number; y: number }[],
@@ -331,26 +341,50 @@ function classifyPixelGestures(
     const dx = pts[8].x - prevIndex.x;
     const dy = pts[8].y - prevIndex.y;
 
-    // 9. Horizontal Swipe Right (ΔX > +50px)
+    // 9. Horizontal Swipe Right (ΔX > +45px)
     if (dx > 45 && Math.abs(dx) > Math.abs(dy)) {
       return { name: "Horizontal Swipe Right", action: "Next Tab / Forward", icon: "👉", score: 96 };
     }
-    // 10. Horizontal Swipe Left (ΔX < -50px)
+    // 10. Horizontal Swipe Left (ΔX < -45px)
     if (dx < -45 && Math.abs(dx) > Math.abs(dy)) {
       return { name: "Horizontal Swipe Left", action: "Previous Tab / Back", icon: "👈", score: 96 };
     }
-    // 11. Vertical Swipe Up (ΔY < -40px)
+    // 11. Vertical Swipe Up (ΔY < -35px)
     if (dy < -35 && Math.abs(dy) > Math.abs(dx)) {
       return { name: "Vertical Swipe Up", action: "Scroll Down", icon: "👆", score: 95 };
     }
+    // 13. Vertical Swipe Down (ΔY > +35px)
+    if (dy > 35 && Math.abs(dy) > Math.abs(dx)) {
+      return { name: "Vertical Swipe Down", action: "Scroll Up / View History", icon: "👇", score: 95 };
+    }
   }
 
-  // 1. Pinch In: Distance between Thumb (4) & Index Tip (8) < 20px
+  // 14. OK Sign: Thumb (4) & Index Tip (8) touch, while Middle & Ring extend
+  if (thumbIndexDist < 30 && middleExtended && ringExtended) {
+    return { name: "OK Sign / Voice Uplink", action: "Voice Uplink / Mic Toggle", icon: "👌", score: 97 };
+  }
+
+  // 15. Call Me / Shaka: Thumb (4) & Pinky (20) extended, other fingers curled
+  if (thumbExtended && pinkyExtended && !indexExtended && !middleExtended && !ringExtended) {
+    return { name: "Call Me / Comm Uplink", action: "Initiate Voice Communications", icon: "🤙", score: 98 };
+  }
+
+  // 16. Vulcan Salute: Index/Middle and Ring/Pinky with separation between Middle & Ring
+  if (indexExtended && middleExtended && ringExtended && pinkyExtended && Math.abs(pts[12].x - pts[16].x) > 28) {
+    return { name: "Vulcan Salute / Imagine", action: "Launch Imagine Studio", icon: "🖖", score: 96 };
+  }
+
+  // 17. Crossed Fingers: Index & Middle tips extended and touching
+  if (indexExtended && middleExtended && indexMiddleDist < 20 && !ringExtended && !pinkyExtended) {
+    return { name: "Crossed Fingers / AI Summary", action: "Generate AI Daily Briefing", icon: "🤞", score: 95 };
+  }
+
+  // 1. Pinch In: Distance between Thumb (4) & Index Tip (8) < 25px
   if (thumbIndexDist < 25) {
     return { name: "Pinch In", action: "Zoom In UI", icon: "🤏", score: 98 };
   }
 
-  // 2. Pinch & Spread: Distance between Thumb (4) & Index Tip (8) > 120px
+  // 2. Pinch & Spread: Distance between Thumb (4) & Index Tip (8) > 115px
   if (thumbIndexDist > 115 && indexExtended && thumbExtended && !ringExtended && !pinkyExtended) {
     return { name: "Pinch & Spread", action: "Zoom Out UI", icon: "👐", score: 94 };
   }
@@ -392,8 +426,164 @@ function classifyPixelGestures(
     return { name: "Rock On / Horns", action: "Toggle Developer Terminal", icon: "🤘", score: 97 };
   }
 
+  // 18. Fist / Deep Focus: All fingers curled in
+  if (!indexExtended && !middleExtended && !ringExtended && !pinkyExtended && !thumbExtended) {
+    return { name: "Fist / Deep Focus", action: "Deep Space Focus Mode", icon: "✊", score: 98 };
+  }
+
   return { name: "Tracking Hand", action: "Hand detected in frame", icon: "✨", score: 85 };
 }
+
+// -------------------------------------------------------------
+// PERFORMANCE-OPTIMIZED MEMOIZED CHAT MESSAGE ITEM
+// Reduces render overhead during continuous speech and long conversations
+// -------------------------------------------------------------
+type ChatMessageItemProps = {
+  message: Message;
+  index: number;
+  isCopied: boolean;
+  onCopy: (text: string, index: number) => void;
+};
+
+const ChatMessageItem = memo<ChatMessageItemProps>(
+  ({ message, index, isCopied, onCopy }) => {
+    return (
+      <div className={`message ${message.role}`}>
+        <div className="message-avatar">
+          {message.role === "aura" ? <AuraFace /> : "YOU"}
+        </div>
+        <div className="message-bubble-body">
+          <p>{message.text}</p>
+          {message.imageUrl && (
+            <div className="chat-image-preview">
+              <img src={message.imageUrl} alt="Generated visual" />
+              <div className="chat-image-actions">
+                <a
+                  href={message.imageUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="image-btn"
+                  download="auracore-creation.jpg"
+                >
+                  <Icon name="download" size={14} /> Full Res
+                </a>
+              </div>
+            </div>
+          )}
+          <div className="message-footer">
+            <time className="message-time tabular-nums">{message.time}</time>
+            {message.role === "aura" && (
+              <button
+                type="button"
+                className="copy-message"
+                onClick={() => onCopy(message.text, index)}
+                aria-label="Copy message"
+              >
+                {isCopied ? "Copied ✓" : "Copy"}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  },
+  (prev, next) =>
+    prev.message.text === next.message.text &&
+    prev.message.imageUrl === next.message.imageUrl &&
+    prev.message.time === next.message.time &&
+    prev.message.role === next.message.role &&
+    prev.isCopied === next.isCopied &&
+    prev.onCopy === next.onCopy
+);
+ChatMessageItem.displayName = "ChatMessageItem";
+
+// -------------------------------------------------------------
+// PERFORMANCE-OPTIMIZED MEMOIZED CHAT COMPOSER
+// Isolates keyboard input and speech-to-text state from full app renders
+// -------------------------------------------------------------
+type ChatComposerProps = {
+  input: string;
+  onInputChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onSubmit: (e: React.FormEvent) => void;
+  listening: boolean;
+  speaking: boolean;
+  isThinking: boolean;
+  onToggleListening: () => void;
+  onStopSpeaking: () => void;
+};
+
+const ChatComposer = memo<ChatComposerProps>(
+  ({
+    input,
+    onInputChange,
+    onSubmit,
+    listening,
+    speaking,
+    isThinking,
+    onToggleListening,
+    onStopSpeaking,
+  }) => {
+    return (
+      <form className="composer" onSubmit={onSubmit}>
+        <input
+          value={input}
+          onChange={onInputChange}
+          placeholder={
+            listening
+              ? "Deep Space Sensor Listening… Speak now, then click mic to transmit"
+              : "Transmit command to Aura Core or click mic for voice uplink…"
+          }
+          disabled={isThinking}
+        />
+
+        {speaking && (
+          <button
+            type="button"
+            className="composer-stop-btn"
+            onClick={onStopSpeaking}
+            title="Stop Aura Core speaking"
+            aria-label="Stop Aura Core speaking"
+          >
+            <Icon name="stop" size={16} />
+          </button>
+        )}
+
+        <button
+          type="button"
+          className={`mic ${listening ? "listening active-talk" : ""}`}
+          onClick={onToggleListening}
+          aria-label={listening ? "Click mic again to send voice command" : "Click mic to speak to Aura Core"}
+          title={listening ? "Click mic again to send voice command" : "Click mic to speak"}
+          disabled={isThinking}
+        >
+          <span className="mic-halo" />
+          <span className="mic-wave-1" />
+          <span className="mic-wave-2" />
+          <Icon name="mic" size={20} />
+        </button>
+
+        <button
+          type="submit"
+          className="send"
+          aria-label="Send message"
+          disabled={isThinking || (!input.trim() && !listening)}
+        >
+          <Icon name="send" size={17} />
+        </button>
+      </form>
+    );
+  },
+  (prev, next) =>
+    prev.input === next.input &&
+    prev.listening === next.listening &&
+    prev.speaking === next.speaking &&
+    prev.isThinking === next.isThinking &&
+    prev.onInputChange === next.onInputChange &&
+    prev.onSubmit === next.onSubmit &&
+    prev.onToggleListening === next.onToggleListening &&
+    prev.onStopSpeaking === next.onStopSpeaking
+);
+ChatComposer.displayName = "ChatComposer";
 
 export default function App() {
   // Navigation & view states
@@ -435,6 +625,8 @@ export default function App() {
   const [isGoogleConnecting, setIsGoogleConnecting] = useState(false);
   const [oauthStatus, setOauthStatus] = useState("");
   const [googleUser, setGoogleUser] = useState<GoogleUser | null>(loadGoogleUser);
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
+  const [gmailMessages, setGmailMessages] = useState<GmailSnippet[]>([]);
   const [audioPromptReady, setAudioPromptReady] = useState(false);
 
   // Image Creation Studio states
@@ -473,13 +665,6 @@ export default function App() {
   const settingsRef = useRef(settings);
   const answerRef = useRef<(question: string) => Promise<void>>(async () => {});
   const mutedRef = useRef(muted);
-
-  // Pre-configured list of user Google accounts for the chooser modal
-  const sampleGoogleAccounts = [
-    { name: "Hamza Ahmad", email: "hamzaahmad6905@gmail.com", avatar: "HA" },
-    { name: "Aura Core Developer", email: "developer.auracore@gmail.com", avatar: "AC" },
-    { name: "Personal Account", email: "user.personal@gmail.com", avatar: "PA" },
-  ];
 
   useEffect(() => {
     cameraOnRef.current = cameraOn;
@@ -561,6 +746,29 @@ export default function App() {
       }
     } catch { /* storage fallback */ }
   }, [googleUser]);
+
+  // Firebase Google Auth state listener
+  useEffect(() => {
+    const unsub = initAuth((user, token) => {
+      const gUser: GoogleUser = {
+        name: user.displayName || user.email?.split("@")[0] || "Google User",
+        email: user.email || "",
+        avatar: user.photoURL || undefined,
+        connected: true,
+        connectedAt: new Date().toLocaleDateString(undefined, {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        }),
+      };
+      setGoogleUser(gUser);
+      if (token) {
+        void fetchCalendarEvents(token).then(setCalendarEvents);
+        void fetchGmailMessages(token).then(setGmailMessages);
+      }
+    });
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     try {
@@ -779,7 +987,7 @@ export default function App() {
     } catch { /* ignore */ }
   };
 
-  const copyMessage = async (text: string, index: number) => {
+  const copyMessage = useCallback(async (text: string, index: number) => {
     try {
       await navigator.clipboard.writeText(text);
       setCopiedIndex(index);
@@ -787,7 +995,17 @@ export default function App() {
     } catch {
       setVoiceStatus("Could not copy to clipboard");
     }
-  };
+  }, []);
+
+  // Memoized input handler for zero render overhead when typing
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setInput(e.target.value);
+  }, []);
+
+  // Memoized copy handler
+  const handleCopyMessage = useCallback((text: string, index: number) => {
+    void copyMessage(text, index);
+  }, [copyMessage]);
 
   const pickVoice = (available: SpeechSynthesisVoice[]) =>
     available.slice().sort((a, b) => {
@@ -936,6 +1154,35 @@ export default function App() {
     isThinkingRef.current = true;
 
     const qLower = question.toLowerCase();
+
+    // Check live Google Calendar
+    if (qLower.includes("calendar") || qLower.includes("schedule") || qLower.includes("meeting") || qLower.includes("standup")) {
+      if (calendarEvents.length > 0) {
+        const eventsSummary = calendarEvents
+          .map(e => `${e.summary}${e.start ? ` (${new Date(e.start).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })})` : ""}`)
+          .join(", ");
+        const reply = `According to your live Google Calendar, your upcoming schedule is: ${eventsSummary}.`;
+        addAuraMessage(reply);
+        setIsThinking(false);
+        isThinkingRef.current = false;
+        return;
+      }
+    }
+
+    // Check live Gmail
+    if (qLower.includes("mail") || qLower.includes("email") || qLower.includes("gmail") || qLower.includes("inbox")) {
+      if (gmailMessages.length > 0) {
+        const mailSummary = gmailMessages
+          .map((m, idx) => `Email ${idx + 1}: ${m.snippet}`)
+          .join(". ");
+        const reply = `Here are your recent unread Gmail updates: ${mailSummary}.`;
+        addAuraMessage(reply);
+        setIsThinking(false);
+        isThinkingRef.current = false;
+        return;
+      }
+    }
+
     if (
       qLower.startsWith("generate an image") ||
       qLower.startsWith("create an image") ||
@@ -955,7 +1202,7 @@ export default function App() {
 
     try {
       const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 28000);
+      const timeout = window.setTimeout(() => controller.abort(), 5500);
       const result = await fetch(`${window.location.origin}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -984,7 +1231,7 @@ export default function App() {
       isThinkingRef.current = false;
       if (!speakingRef.current) setVoiceStatus("Ready for your voice");
     }
-  }, [addAuraMessage, generateImage]);
+  }, [addAuraMessage, generateImage, calendarEvents, gmailMessages]);
   useEffect(() => {
     answerRef.current = answer;
   }, [answer]);
@@ -1013,23 +1260,15 @@ export default function App() {
       resultIndex: number;
       results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal?: boolean }>;
     }) => {
-      let finalTranscript = "";
-      let interimTranscript = "";
-
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const transcript = e.results[i][0].transcript;
-        if (e.results[i].isFinal) {
-          finalTranscript += transcript;
-        } else {
-          interimTranscript += transcript;
-        }
+      let fullTranscript = "";
+      for (let i = 0; i < e.results.length; i++) {
+        fullTranscript += e.results[i][0].transcript;
       }
-
-      const activeText = (finalTranscript || interimTranscript).trim();
+      const activeText = fullTranscript.trim();
       if (activeText) {
         speechTranscriptRef.current = activeText;
         setInput(activeText);
-        setVoiceStatus(`Hearing: "${activeText}" — Click mic to send`);
+        setVoiceStatus(`Hearing: "${activeText}" — Click mic again to send`);
       }
     };
 
@@ -1082,7 +1321,7 @@ export default function App() {
   // Voice Command Toggle:
   // Click 1: Starts listening & live transcription
   // Click 2: Immediately stops listening, sends the transcribed question, and chatbot responds in voice!
-  const toggleListening = async () => {
+  const toggleListening = useCallback(async () => {
     const Api = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!Api) {
       setVoiceStatus("Voice input requires Chrome or Edge");
@@ -1126,7 +1365,20 @@ export default function App() {
     setListening(true);
     setVoiceStatus("Listening… Speak now, then click mic to send");
     startRecognitionSession();
-  };
+  }, [listening, input, startRecognitionSession]);
+
+  // Memoized form submit handler for chat composer
+  const handleComposerSubmit = useCallback(
+    (e: React.FormEvent) => {
+      e.preventDefault();
+      if (listening) {
+        void toggleListening();
+        return;
+      }
+      if (input.trim()) void answer(input.trim());
+    },
+    [listening, input, answer, toggleListening]
+  );
 
   // Perform gesture action
   const performGestureAction = (name: string, action: string, icon: string) => {
@@ -1184,6 +1436,22 @@ export default function App() {
       setActiveView(current => (current === "activity" ? "imagine" : current === "imagine" ? "assistant" : "activity"));
     } else if (name === "Vertical Swipe Up") {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    } else if (name === "Vertical Swipe Down") {
+      const msgs = document.querySelector(".messages");
+      if (msgs) msgs.scrollTo({ top: 0, behavior: "smooth" });
+    } else if (name === "Fist / Deep Focus") {
+      setFocusMode(v => !v);
+      addAuraMessage("Fist detected: Deep Space Focus Mode toggled.");
+    } else if (name === "OK Sign / Voice Uplink") {
+      void toggleListening();
+    } else if (name === "Call Me / Comm Uplink") {
+      addAuraMessage("Communications uplink engaged. Speak now.");
+      void toggleListening();
+    } else if (name === "Vulcan Salute / Imagine") {
+      setActiveView("imagine");
+      addAuraMessage("Vulcan salute detected: Launching Imagine Studio.");
+    } else if (name === "Crossed Fingers / AI Summary") {
+      void answer("Summarize my day and give me a productivity tip");
     }
   };
 
@@ -1428,35 +1696,16 @@ export default function App() {
     return () => window.clearInterval(watchdog);
   }, [trackFrame]);
 
-  // Google Account Connection Handler
-  const connectGoogleAccount = (email: string, name?: string, avatar?: string) => {
-    const cleanEmail = email.trim();
-    if (!cleanEmail || !cleanEmail.includes("@") || !cleanEmail.includes(".")) {
-      setGoogleError("Please enter a valid Google or Gmail address.");
-      return;
-    }
+  // Real Google Account Connection Handler via Firebase Auth
+  const handleGoogleSignIn = async () => {
     setGoogleError("");
     setIsGoogleConnecting(true);
-
-    const computedName =
-      name ||
-      cleanEmail
-        .split("@")[0]
-        .replace(/[._]/g, " ")
-        .replace(/\b\w/g, c => c.toUpperCase());
-    const initials =
-      computedName
-        .split(" ")
-        .map(p => p[0])
-        .slice(0, 2)
-        .join("")
-        .toUpperCase() || "G";
-
-    setTimeout(() => {
+    try {
+      const { user: fbUser, accessToken } = await googleSignIn();
       const user: GoogleUser = {
-        name: computedName,
-        email: cleanEmail,
-        avatar: avatar || initials,
+        name: fbUser.displayName || fbUser.email?.split("@")[0] || "Google User",
+        email: fbUser.email || "",
+        avatar: fbUser.photoURL || undefined,
         connected: true,
         connectedAt: new Date().toLocaleDateString(undefined, {
           month: "short",
@@ -1469,17 +1718,31 @@ export default function App() {
       setGoogleModalOpen(false);
       setConnectionsOpen(false);
       setCustomGoogleEmail("");
-      setOauthStatus(`Connected to Google Account (${cleanEmail}). Calendar & Gmail synced.`);
-      addAuraMessage(`Google Account (${cleanEmail}) is connected. Your calendar and Gmail are now synced with Aura Core.`);
-    }, 400);
+      setOauthStatus(`Connected to Google Account (${user.email}). Calendar & Gmail synced.`);
+      addAuraMessage(`Google Account (${user.email}) is connected! Your live Calendar and Gmail are synchronized with Aura Core.`);
+
+      if (accessToken) {
+        void fetchCalendarEvents(accessToken).then(events => {
+          setCalendarEvents(events);
+        });
+        void fetchGmailMessages(accessToken).then(msgs => {
+          setGmailMessages(msgs);
+        });
+      }
+    } catch (err: any) {
+      console.error("Google Sign-In failed:", err);
+      setIsGoogleConnecting(false);
+      setGoogleError(err?.message || "Failed to connect Google account. Please try again.");
+    }
   };
 
-  const selectGoogleAccount = (acc: { name: string; email: string; avatar?: string }) => {
-    connectGoogleAccount(acc.email, acc.name, acc.avatar);
-  };
-
-  const disconnectGoogle = () => {
+  const disconnectGoogle = async () => {
+    try {
+      await googleLogout();
+    } catch { /* safety */ }
     setGoogleUser(null);
+    setCalendarEvents([]);
+    setGmailMessages([]);
     setOauthStatus("Google Account disconnected.");
     addAuraMessage("Google Account unlinked. Local Aura Core workflows remain operational.");
   };
@@ -1578,13 +1841,17 @@ export default function App() {
               <div className="google-connected-view">
                 <div className="google-user-card">
                   <div className="google-user-avatar">
-                    {googleUser.avatar || googleUser.name.charAt(0)}
+                    {googleUser.avatar && googleUser.avatar.startsWith("http") ? (
+                      <img src={googleUser.avatar} alt={googleUser.name} style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
+                    ) : (
+                      googleUser.avatar || googleUser.name.charAt(0)
+                    )}
                   </div>
                   <div className="google-user-meta">
                     <strong>{googleUser.name}</strong>
                     <span>{googleUser.email}</span>
                     <small className="google-sync-badge">
-                      <span className="sync-pulse" /> Synced with Aura Core · {googleUser.connectedAt}
+                      <span className="sync-pulse" /> Live Google Sync Active · {googleUser.connectedAt}
                     </small>
                   </div>
                 </div>
@@ -1594,18 +1861,52 @@ export default function App() {
                     <Icon name="calendar" size={16} />
                     <div>
                       <strong>Google Calendar</strong>
-                      <span>Real-time schedule, reminders &amp; standups</span>
+                      <span>
+                        {calendarEvents.length > 0
+                          ? `${calendarEvents.length} upcoming meetings synced`
+                          : "Calendar synced · Live schedule ready"}
+                      </span>
                     </div>
                     <span className="scope-tag">Active</span>
                   </div>
+
+                  {calendarEvents.length > 0 && (
+                    <div style={{ padding: "8px 12px", background: "rgba(255,255,255,0.03)", borderRadius: "8px", fontSize: "11px" }}>
+                      <strong style={{ display: "block", color: "var(--accent-cyan)", marginBottom: "4px" }}>Next on your schedule:</strong>
+                      {calendarEvents.slice(0, 3).map(e => (
+                        <div key={e.id} style={{ display: "flex", justifyContent: "space-between", margin: "2px 0", color: "#e0eef2" }}>
+                          <span>• {e.summary}</span>
+                          <span style={{ color: "var(--text-dim)" }}>
+                            {e.start ? new Date(e.start).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "All day"}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   <div className="google-scope-item active">
                     <Icon name="mail" size={16} />
                     <div>
                       <strong>Gmail Inbox</strong>
-                      <span>Priority unread emails &amp; summaries</span>
+                      <span>
+                        {gmailMessages.length > 0
+                          ? `${gmailMessages.length} unread priority messages synced`
+                          : "Gmail inbox synced · Ready for voice queries"}
+                      </span>
                     </div>
                     <span className="scope-tag">Active</span>
                   </div>
+
+                  {gmailMessages.length > 0 && (
+                    <div style={{ padding: "8px 12px", background: "rgba(255,255,255,0.03)", borderRadius: "8px", fontSize: "11px" }}>
+                      <strong style={{ display: "block", color: "var(--accent-teal)", marginBottom: "4px" }}>Recent inbox updates:</strong>
+                      {gmailMessages.slice(0, 2).map((m, idx) => (
+                        <div key={m.id || idx} style={{ margin: "2px 0", color: "#c6dbe0", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          • {m.snippet}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div className="google-connected-actions">
@@ -1627,77 +1928,35 @@ export default function App() {
               </div>
             ) : (
               <div className="google-signin-view">
-                {/* ONE-CLICK GOOGLE SIGN IN BUTTON */}
+                {googleError && <div className="google-error-alert">{googleError}</div>}
+
+                {/* OFFICIAL GOOGLE SIGN IN BUTTON */}
                 <button
                   type="button"
-                  className="google-primary-btn"
+                  className="gsi-material-button"
+                  onClick={handleGoogleSignIn}
                   disabled={isGoogleConnecting}
-                  onClick={() => {
-                    const fallbackEmail = customGoogleEmail.trim() || "hamzaahmad6905@gmail.com";
-                    connectGoogleAccount(fallbackEmail);
-                  }}
                 >
-                  <Icon name="google" size={20} />
-                  <span>
-                    {isGoogleConnecting ? "Connecting to Google…" : "Continue with Google Account"}
-                  </span>
-                </button>
-
-                <div className="google-modal-divider">
-                  <span>or connect with email</span>
-                </div>
-
-                {/* DIRECT EMAIL INPUT */}
-                <div className="google-email-form">
-                  <div className="google-input-wrapper">
-                    <Icon name="mail" size={16} />
-                    <input
-                      type="email"
-                      placeholder="Enter your Gmail address (e.g. you@gmail.com)"
-                      value={customGoogleEmail}
-                      onChange={e => {
-                        setCustomGoogleEmail(e.target.value);
-                        if (googleError) setGoogleError("");
-                      }}
-                      onKeyDown={e => {
-                        if (e.key === "Enter" && customGoogleEmail.trim()) {
-                          e.preventDefault();
-                          connectGoogleAccount(customGoogleEmail);
-                        }
-                      }}
-                      disabled={isGoogleConnecting}
-                    />
+                  <div className="gsi-material-button-state"></div>
+                  <div className="gsi-material-button-content-wrapper">
+                    <div className="gsi-material-button-icon">
+                      <svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" style={{ display: 'block' }}>
+                        <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path>
+                        <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path>
+                        <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"></path>
+                        <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"></path>
+                        <path fill="none" d="M0 0h48v48H0z"></path>
+                      </svg>
+                    </div>
+                    <span className="gsi-material-button-contents">
+                      {isGoogleConnecting ? "Connecting to Google…" : "Sign in with Google"}
+                    </span>
                   </div>
-                  <button
-                    type="button"
-                    className="google-submit-btn"
-                    disabled={!customGoogleEmail.trim() || isGoogleConnecting}
-                    onClick={() => connectGoogleAccount(customGoogleEmail)}
-                  >
-                    {isGoogleConnecting ? "Syncing…" : "Connect & Sync"}
-                  </button>
-                </div>
-
-                {googleError && <p className="google-error-msg">{googleError}</p>}
-
-                {/* FAST ACCOUNT SHORTCUT CHIPS */}
-                <div className="google-chips-row">
-                  <span className="chips-label">Quick select:</span>
-                  {sampleGoogleAccounts.map(acc => (
-                    <button
-                      key={acc.email}
-                      type="button"
-                      className="google-chip"
-                      onClick={() => selectGoogleAccount(acc)}
-                    >
-                      {acc.name}
-                    </button>
-                  ))}
-                </div>
+                </button>
 
                 <div className="google-security-guarantee">
                   <small>
-                    🔒 <strong>Encrypted on-device:</strong> Aura Core accesses your Calendar &amp; Gmail read-only. Your credentials remain private and secure on your browser.
+                    🔒 <strong>Official Google OAuth:</strong> Authorizes Aura Core to see your Google Calendar events and Gmail inbox read-only. Your data stays safe and synchronized.
                   </small>
                 </div>
               </div>
@@ -1758,7 +2017,7 @@ export default function App() {
           )}
 
           <div className="status">
-            <span className="status-dot" /> SYSTEM ONLINE <span className="divider" /> {clock}
+            <span className="status-dot" /> ORBITAL TELEMETRY · NOMINAL <span className="divider" /> <span className="font-mono tabular-nums">{clock}</span>
           </div>
         </div>
       </header>
@@ -1930,37 +2189,13 @@ export default function App() {
 
                 <div className="messages">
                   {messages.map((message, index) => (
-                    <div className={`message ${message.role}`} key={`${message.time}-${index}`}>
-                      <div className="message-avatar">
-                        {message.role === "aura" ? <AuraFace /> : "YOU"}
-                      </div>
-                      <div>
-                        <p>{message.text}</p>
-                        {message.imageUrl && (
-                          <div className="chat-image-preview">
-                            <img src={message.imageUrl} alt="Generated visual" />
-                            <div className="chat-image-actions">
-                              <a href={message.imageUrl} target="_blank" rel="noreferrer" className="image-btn" download="auracore-creation.jpg">
-                                <Icon name="download" size={14} /> Full Res
-                              </a>
-                            </div>
-                          </div>
-                        )}
-                        <div className="message-footer">
-                          <time>{message.time}</time>
-                          {message.role === "aura" && (
-                            <button
-                              type="button"
-                              className="copy-message"
-                              onClick={() => void copyMessage(message.text, index)}
-                              aria-label="Copy message"
-                            >
-                              {copiedIndex === index ? "Copied ✓" : "Copy"}
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
+                    <ChatMessageItem
+                      key={`${message.time}-${index}`}
+                      message={message}
+                      index={index}
+                      isCopied={copiedIndex === index}
+                      onCopy={handleCopyMessage}
+                    />
                   ))}
 
                   {isThinking && (
@@ -1968,7 +2203,7 @@ export default function App() {
                       <div className="message-avatar">
                         <AuraFace />
                       </div>
-                      <div>
+                      <div className="message-bubble-body">
                         <p className="typing-indicator">
                           <span />
                           <span />
@@ -1989,57 +2224,17 @@ export default function App() {
                   ))}
                 </div>
 
-                {/* COMPOSER */}
-                <form
-                  className="composer"
-                  onSubmit={e => {
-                    e.preventDefault();
-                    if (listening) {
-                      void toggleListening();
-                      return;
-                    }
-                    if (input.trim()) void answer(input.trim());
-                  }}
-                >
-                  <input
-                    value={input}
-                    onChange={e => setInput(e.target.value)}
-                    placeholder={listening ? "Listening… Speak now, then click mic to send" : "Ask Aura Core anything or click mic to speak…"}
-                    disabled={isThinking}
-                  />
-
-                  {/* STOP BUTTON IN COMPOSER */}
-                  {speaking && (
-                    <button
-                      type="button"
-                      className="composer-stop-btn"
-                      onClick={stopSpeaking}
-                      title="Stop Aura Core speaking"
-                      aria-label="Stop Aura Core speaking"
-                    >
-                      <Icon name="stop" size={16} />
-                    </button>
-                  )}
-
-                  {/* VOICE COMMAND TOGGLE MIC BUTTON */}
-                  <button
-                    type="button"
-                    className={`mic ${listening ? "listening active-talk" : ""}`}
-                    onClick={() => void toggleListening()}
-                    aria-label={listening ? "Click to send your voice command" : "Click to speak to Aura Core"}
-                    title={listening ? "Click to send voice command" : "Click to speak"}
-                    disabled={isThinking}
-                  >
-                    <span className="mic-halo" />
-                    <span className="mic-wave-1" />
-                    <span className="mic-wave-2" />
-                    <Icon name={listening ? "send" : "mic"} size={20} />
-                  </button>
-
-                  <button className="send" aria-label="Send message" disabled={isThinking || (!input.trim() && !listening)}>
-                    <Icon name="send" size={17} />
-                  </button>
-                </form>
+                {/* MEMOIZED CHAT COMPOSER */}
+                <ChatComposer
+                  input={input}
+                  onInputChange={handleInputChange}
+                  onSubmit={handleComposerSubmit}
+                  listening={listening}
+                  speaking={speaking}
+                  isThinking={isThinking}
+                  onToggleListening={toggleListening}
+                  onStopSpeaking={stopSpeaking}
+                />
               </section>
 
               {/* PERSISTENT VISION SENSOR PANEL */}
@@ -2047,7 +2242,7 @@ export default function App() {
                 <div className="panel-head">
                   <div>
                     <strong>VISION SENSOR</strong>
-                    <span className="pill">{cameraOn ? "12 GESTURES ACTIVE" : "STANDBY"}</span>
+                    <span className="pill">{cameraOn ? "18 GESTURES ACTIVE" : "STANDBY"}</span>
                   </div>
                   <div className="panel-head-actions">
                     <button
@@ -2317,20 +2512,26 @@ export default function App() {
 
                 {/* Gesture reference cheat sheet */}
                 <div className="gesture-reference-card">
-                  <h4>12 Hand Gesture Protocols</h4>
+                  <h4>18 Neuronal Vision Gesture Protocols</h4>
                   <div className="gesture-rules-grid">
-                    <div><b>1. Pinch In (&lt;20px)</b><span>Zoom In UI</span></div>
-                    <div><b>2. Pinch &amp; Spread (&gt;120px)</b><span>Zoom Out UI</span></div>
+                    <div><b>1. Pinch In (&lt;25px)</b><span>Zoom In UI</span></div>
+                    <div><b>2. Pinch &amp; Spread (&gt;115px)</b><span>Zoom Out UI</span></div>
                     <div><b>3. Victory / Peace (✌️)</b><span>Snap &amp; Inspect (Vision Audit)</span></div>
                     <div><b>4. Pointing Index (☝️)</b><span>Mouse / Cursor Control</span></div>
                     <div><b>5. Thumbs Up (👍)</b><span>Approve / Confirm</span></div>
                     <div><b>6. Thumbs Down (👎)</b><span>Reject / Cancel</span></div>
                     <div><b>7. Rock On / Horns (🤘)</b><span>Toggle HUD Terminal</span></div>
-                    <div><b>8. Three-Finger Claw</b><span>Screen Capture / Save Log</span></div>
-                    <div><b>9. Swipe Right (&gt;+50px)</b><span>Next Tab / Forward</span></div>
-                    <div><b>10. Swipe Left (&lt;-50px)</b><span>Previous Tab / Back</span></div>
-                    <div><b>11. Swipe Up (&lt;-40px)</b><span>Scroll Down</span></div>
+                    <div><b>8. Three-Finger Claw (🦅)</b><span>Screen Capture / Save Log</span></div>
+                    <div><b>9. Swipe Right (👉)</b><span>Next Tab / Forward</span></div>
+                    <div><b>10. Swipe Left (👈)</b><span>Previous Tab / Back</span></div>
+                    <div><b>11. Swipe Up (👆)</b><span>Scroll Down Messages</span></div>
                     <div><b>12. Open Palm (✋)</b><span>System Privacy / Mute</span></div>
+                    <div><b>13. Swipe Down (👇)</b><span>Scroll Up / History</span></div>
+                    <div><b>14. OK Sign (👌)</b><span>Voice Uplink / Mic Toggle</span></div>
+                    <div><b>15. Call Me (🤙)</b><span>Audio Uplink Connect</span></div>
+                    <div><b>16. Vulcan Salute (🖖)</b><span>Launch Imagine Studio</span></div>
+                    <div><b>17. Crossed Fingers (🤞)</b><span>AI Daily Briefing</span></div>
+                    <div><b>18. Fist / Close (✊)</b><span>Deep Space Focus Mode</span></div>
                   </div>
                 </div>
 

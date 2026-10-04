@@ -52,6 +52,17 @@ export default defineConfig(({ mode }) => {
   process.env.GOOGLE_API_KEY = env.GOOGLE_API_KEY || process.env.GOOGLE_API_KEY
   return {
     plugins: [react(), geminiApi()],
-    server: { proxy: {} },
+    server: {
+      host: '0.0.0.0',
+      port: 3000,
+      strictPort: true,
+      allowedHosts: true,
+    },
+    preview: {
+      host: '0.0.0.0',
+      port: 3000,
+      strictPort: true,
+      allowedHosts: true,
+    },
   }
 })
