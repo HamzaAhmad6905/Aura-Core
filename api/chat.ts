@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { generateAuraReply, parseChatPayload } from "./chat-core";
+import { generateAuraReply, parseChatPayload } from "./chat-core.js";
 
 export const config = {
   runtime: "nodejs",
