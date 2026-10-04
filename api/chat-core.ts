@@ -1,8 +1,7 @@
-import { GoogleGenAI } from "@google/genai";
-
 export type ChatTurn = { role: string; text: string };
 
 const GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_REQUEST_TIMEOUT_MS = 18000;
 
 export function getGeminiApiKey(): string {
   return (
@@ -28,29 +27,70 @@ function toContents(messages: ChatTurn[]) {
 }
 
 async function generateWithGenAi(apiKey: string, messages: ChatTurn[], lang: string): Promise<string> {
-  const ai = new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      timeout: 20000,
-      retryOptions: { attempts: 1 },
-      headers: {
-        "User-Agent": "aistudio-build",
+  let response: Response;
+  try {
+    response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey,
+        },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemInstruction(lang) }] },
+          contents: toContents(messages),
+          generationConfig: {
+            maxOutputTokens: 512,
+            thinkingConfig: { thinkingBudget: 0 },
+          },
+        }),
+        signal: AbortSignal.timeout(GEMINI_REQUEST_TIMEOUT_MS),
       },
-    },
-  });
+    );
+  } catch (err) {
+    if (err instanceof Error && err.name === "TimeoutError") {
+      throw new Error(`Gemini did not respond within ${GEMINI_REQUEST_TIMEOUT_MS / 1000} seconds.`);
+    }
+    throw err;
+  }
 
-  const result = await ai.models.generateContent({
-    model: GEMINI_MODEL,
-    contents: toContents(messages),
-    config: {
-      systemInstruction: systemInstruction(lang),
-      maxOutputTokens: 512,
-      thinkingConfig: { thinkingBudget: 0 },
-    },
-  });
-  const text = result.text?.trim();
-  if (text) return text;
-  throw new Error(`Gemini returned an empty response for ${GEMINI_MODEL}`);
+  const result: unknown = await response.json();
+  if (!response.ok) {
+    const error = result && typeof result === "object" && "error" in result
+      ? result.error
+      : undefined;
+    const message = error && typeof error === "object" && "message" in error
+      && typeof error.message === "string"
+      ? error.message
+      : `Gemini API returned HTTP ${response.status}.`;
+    throw new Error(message);
+  }
+
+  if (
+    !result
+    || typeof result !== "object"
+    || !("candidates" in result)
+    || !Array.isArray(result.candidates)
+  ) {
+    throw new Error("Gemini returned an invalid response.");
+  }
+  const candidate = result.candidates[0];
+  if (!candidate || typeof candidate !== "object" || !("content" in candidate)) {
+    throw new Error("Gemini returned no answer. Check the prompt and model availability.");
+  }
+  const content = candidate.content;
+  if (!content || typeof content !== "object" || !("parts" in content) || !Array.isArray(content.parts)) {
+    throw new Error("Gemini returned no answer text.");
+  }
+  const text = content.parts
+    .filter((part: unknown): part is { text: string } =>
+      Boolean(part && typeof part === "object" && "text" in part && typeof part.text === "string"))
+    .map((part: { text: string }) => part.text)
+    .join("")
+    .trim();
+  if (!text) throw new Error("Gemini returned an empty response.");
+  return text;
 }
 
 export async function generateAuraReply(messages: ChatTurn[], language: string): Promise<string> {

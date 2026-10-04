@@ -36,7 +36,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
     return res.status(502).json({
-      error: "Aura could not get a reply from Gemini. Check the Vercel function logs and verify the API key and model access.",
+      error: err instanceof Error
+        ? `Gemini request failed: ${err.message.slice(0, 400)}`
+        : "Gemini request failed. Check the Vercel function logs.",
     });
   }
 }

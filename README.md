@@ -26,7 +26,7 @@ Open the local Vite URL shown in the terminal.
 
 ## Important: users never enter the Gemini API key
 
-Aura sends chat requests to `/api/chat`. The Gemini SDK is initialized in `vite.config.ts` on the server side using `process.env.GEMINI_API_KEY`. The browser does not receive the private key and the UI does not contain a key-entry form.
+Aura sends chat requests to `/api/chat`. The server-side handler calls the Gemini API using `process.env.GEMINI_API_KEY`. The browser does not receive the private key and the UI does not contain a key-entry form.
 
 For a public Vercel deployment, add `GEMINI_API_KEY` under **Project Settings → Environment Variables** for every environment you use, then redeploy. Vercel runs the server-side handler in `api/chat.ts`; the Vite middleware is only for local development. If the key is missing, invalid, or cannot access the configured Gemini models, Aura now shows an error instead of presenting a canned reply as if it answered your question.
 
