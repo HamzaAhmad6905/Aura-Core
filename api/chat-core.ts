@@ -2,10 +2,7 @@ import { GoogleGenAI } from "@google/genai";
 
 export type ChatTurn = { role: string; text: string };
 
-const GEMINI_MODELS = [
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-];
+const GEMINI_MODEL = "gemini-2.5-flash";
 
 export function getGeminiApiKey(): string {
   return (
@@ -34,29 +31,26 @@ async function generateWithGenAi(apiKey: string, messages: ChatTurn[], lang: str
   const ai = new GoogleGenAI({
     apiKey,
     httpOptions: {
+      timeout: 20000,
+      retryOptions: { attempts: 1 },
       headers: {
         "User-Agent": "aistudio-build",
       },
     },
   });
 
-  let lastError: unknown;
-  for (const model of GEMINI_MODELS) {
-    try {
-      const result = await ai.models.generateContent({
-        model,
-        contents: toContents(messages),
-        config: {
-          systemInstruction: systemInstruction(lang),
-        },
-      });
-      const text = result.text?.trim();
-      if (text) return text;
-    } catch (err) {
-      lastError = err;
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error("Gemini generation failed");
+  const result = await ai.models.generateContent({
+    model: GEMINI_MODEL,
+    contents: toContents(messages),
+    config: {
+      systemInstruction: systemInstruction(lang),
+      maxOutputTokens: 512,
+      thinkingConfig: { thinkingBudget: 0 },
+    },
+  });
+  const text = result.text?.trim();
+  if (text) return text;
+  throw new Error(`Gemini returned an empty response for ${GEMINI_MODEL}`);
 }
 
 export async function generateAuraReply(messages: ChatTurn[], language: string): Promise<string> {
