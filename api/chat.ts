@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { generateAuraReply, parseChatPayload } from "./chat-core.js";
+import { generateAuraReply, getGeminiApiKey, parseChatPayload } from "./chat-core.js";
 
 export const config = {
   runtime: "nodejs",
@@ -30,8 +30,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({ text });
   } catch (err) {
     console.warn("Chat handler error:", err instanceof Error ? err.message : err);
-    return res.status(200).json({
-      text: "I am Aura Core, here and ready to assist you. How can I help today?",
+    if (!getGeminiApiKey()) {
+      return res.status(503).json({
+        error: "GEMINI_API_KEY is not configured. Add it to the Vercel project's environment variables and redeploy.",
+      });
+    }
+    return res.status(502).json({
+      error: "Aura could not get a reply from Gemini. Check the Vercel function logs and verify the API key and model access.",
     });
   }
 }

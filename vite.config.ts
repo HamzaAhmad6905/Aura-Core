@@ -1,6 +1,6 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig, loadEnv, type Plugin } from 'vite'
-import { generateAuraReply, parseChatPayload } from './api/chat-core.js'
+import { generateAuraReply, getGeminiApiKey, parseChatPayload } from './api/chat-core.js'
 
 function geminiApi(): Plugin {
   const handleChat = async (request: import('http').IncomingMessage, response: import('http').ServerResponse) => {
@@ -28,10 +28,14 @@ function geminiApi(): Plugin {
       response.setHeader('Access-Control-Allow-Origin', '*')
       response.end(JSON.stringify({ text }))
     } catch (err) {
-      console.warn('Local /api/chat fallback:', err)
-      response.statusCode = 200
+      console.warn('Local /api/chat request failed:', err)
+      response.statusCode = getGeminiApiKey() ? 502 : 503
       response.setHeader('Content-Type', 'application/json')
-      response.end(JSON.stringify({ text: 'I am Aura Core, here and ready to assist you. How can I help today?' }))
+      response.end(JSON.stringify({
+        error: getGeminiApiKey()
+          ? 'Aura could not get a reply from Gemini. Check the server logs and verify the API key and model access.'
+          : 'GEMINI_API_KEY is not configured. Add it to your local server environment and restart the server.',
+      }))
     }
   }
 
